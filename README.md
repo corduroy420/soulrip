@@ -1,6 +1,6 @@
-<img src="assets/logo.png" width="96" alt="Soulrip logo" align="right">
+<p align="center"><img src="assets/icon.png" width="140" alt="Soulrip icon"></p>
 
-# Soulrip
+<h1 align="center">Soulrip</h1>
 
 A SoundCloud, Spotify and YouTube playlist downloader for DJs. For every track it first looks for a
 higher-quality file on **Soulseek** (FLAC, WAV, MP3 320…), scores each result for how closely it matches,

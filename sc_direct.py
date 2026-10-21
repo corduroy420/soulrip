@@ -189,6 +189,43 @@ BROWSERS = [
 ]
 
 
+# How each browser identifies itself as the system default: macOS bundle id / Windows ProgId prefix
+_DEFAULT_IDS = {
+    "chrome": ("com.google.chrome", "ChromeHTML"), "brave": ("com.brave.browser", "BraveHTML"),
+    "edge": ("com.microsoft.edgemac", "MSEdgeHTM"), "firefox": ("org.mozilla.firefox", "FirefoxURL"),
+    "safari": ("com.apple.safari", None), "opera": ("com.operasoftware.opera", "Opera"),
+    "vivaldi": ("com.vivaldi.vivaldi", "VivaldiHTM"), "chromium": ("org.chromium.chromium", "ChromiumHTM"),
+}
+
+
+def default_browser() -> str | None:
+    """The system's default web browser as one of our keys ("brave", "chrome"…), or None if unknown."""
+    import sys
+    try:
+        if sys.platform == "darwin":
+            import plistlib
+            path = os.path.expanduser("~/Library/Preferences/com.apple.LaunchServices/"
+                                      "com.apple.launchservices.secure.plist")
+            handler = None
+            if os.path.exists(path):
+                with open(path, "rb") as fh:
+                    for h in plistlib.load(fh).get("LSHandlers", []):
+                        if h.get("LSHandlerURLScheme") == "https":
+                            handler = (h.get("LSHandlerRoleAll") or "").lower()
+            if not handler:
+                return "safari"               # nothing set: macOS uses Safari
+            return next((k for k, (mac, _w) in _DEFAULT_IDS.items() if mac == handler), None)
+        if sys.platform == "win32":
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\Shell\Associations"
+                                r"\UrlAssociations\https\UserChoice") as key:
+                prog = winreg.QueryValueEx(key, "ProgId")[0]
+            return next((k for k, (_m, win) in _DEFAULT_IDS.items() if win and prog.startswith(win)), None)
+    except Exception:
+        pass
+    return None
+
+
 def installed_browsers() -> list[tuple[str, str]]:
     """[(label, key)] for browsers that have a profile on this computer."""
     import sys

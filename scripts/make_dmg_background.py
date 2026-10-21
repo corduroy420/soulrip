@@ -15,7 +15,7 @@ WIDTH, HEIGHT = 660, 400
 APP_POS, APPLICATIONS_POS = (170, 205), (490, 205)   # icon centres (points)
 ICON_SIZE = 128
 TOP, BOTTOM = (34, 36, 46), (22, 23, 30)
-ARROW = (255, 140, 66)           # the orange of the logo
+ARROW = (88, 166, 230)           # the app's blue accent
 TEXT, SUBTLE = (240, 240, 245), (150, 152, 165)
 
 FONT_CANDIDATES = ["/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Helvetica.ttc",

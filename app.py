@@ -338,7 +338,17 @@ class ReviewDialog(ctk.CTkToplevel):
             except RuntimeError as e:
                 self.pstatus.configure(text=str(e), text_color=ui.BAD)
         elif d.get("status"):
-            self.pstatus.configure(text=d["status"], text_color=ui.INFO)
+            text = d["status"]
+            if self.app.player.paused:
+                text = text.replace("Playing", "⏸ Paused (Space to resume)", 1)
+            self.pstatus.configure(text=text, text_color=ui.INFO)
+
+    def show_paused(self, paused: bool):
+        try:
+            self.pstatus.configure(text="⏸ Paused — press Space to resume" if paused else "Playing…",
+                                   text_color=ui.INFO)
+        except tk.TclError:
+            pass
 
     def download(self):
         sel = self.tree.selection()
@@ -383,7 +393,10 @@ class SoundCloudLoginDialog(ctk.CTkToplevel):
         inner = ctk.CTkFrame(box, fg_color="transparent")
         inner.pack(fill="x", padx=16, pady=14)
         ctk.CTkLabel(inner, text="Log in with your browser (easiest)", font=ui.font(14, True)).pack(anchor="w")
-        browsers = sc_direct.installed_browsers()
+        default = sc_direct.default_browser()
+        browsers = [(f"{label} (default)" if key == default else label, key)
+                    for label, key in sc_direct.installed_browsers()]
+        browsers.sort(key=lambda b: b[1] != default)          # the default browser first
         self.browser_keys = {label: key for label, key in browsers}
         self.browser = tk.StringVar()
         row = ctk.CTkFrame(inner, fg_color="transparent")
@@ -392,9 +405,10 @@ class SoundCloudLoginDialog(ctk.CTkToplevel):
         combo = ctk.CTkOptionMenu(row, variable=self.browser, values=list(self.browser_keys) or ["none found"],
                                   width=200, dynamic_resizing=False)
         combo.pack(side="left", padx=8)
-        saved = app.cfg.get("sc_browser")
+        # preselect the system's default browser; else the one used last time
+        want = default if default in self.browser_keys.values() else app.cfg.get("sc_browser")
         if browsers:
-            self.browser.set(next((l for l, k in browsers if k == saved), browsers[0][0]))
+            self.browser.set(next((l for l, k in browsers if k == want), browsers[0][0]))
         steps = ctk.CTkFrame(inner, fg_color="transparent")
         steps.pack(fill="x", pady=(10, 0))
         self.open_btn = ui.secondary(steps, "1.  Open SoundCloud to log in", self.open_browser)
@@ -844,6 +858,11 @@ class App:
         self.now_label.pack(side="left", fill="x", expand=True, padx=14, pady=8)
         ctk.CTkButton(self.now, text="■  Stop", width=90, command=self.stop_preview,
                       fg_color=ui.STOP, hover_color=ui.STOP_HOVER).pack(side="right", padx=10, pady=8)
+        self.pause_btn = ui.secondary(self.now, "⏸  Pause", self.toggle_pause, width=110)
+        self.pause_btn.pack(side="right", pady=8)
+        self._now_text = ""
+        # Space = play/pause the preview (left alone while typing in a text field)
+        root.bind_all("<space>", self._on_space)
         for seq in ("<Button-2>", "<Button-3>", "<Control-Button-1>"):   # right-click on macOS + others
             self.tree.bind(seq, self.row_menu)
         self.waiting_rows: set[int] = set()    # tracks currently waiting in an uploader's queue
@@ -1374,7 +1393,9 @@ class App:
             self._preview_failed(idx, str(e))
             return
         self._update_row(idx, play="■")
-        self._now(f"▶  {track.display}   ·   {desc}")
+        self._now_text = f"{track.display}   ·   {desc}"
+        self._now(f"▶  {self._now_text}")
+        self.pause_btn.configure(text="⏸  Pause")
         self.root.after(500, self._poll_player)
 
     def _preview_failed(self, idx, msg):
@@ -1387,10 +1408,34 @@ class App:
     def _poll_player(self):
         if self.playing is None:
             return
-        if self.player.playing:
+        if self.player.playing or self.player.paused:
             self.root.after(500, self._poll_player)
         else:                                             # preview reached its end
             self.stop_preview()
+
+    def toggle_pause(self):
+        if not self.player.active:
+            return
+        self.player.toggle_pause()
+        paused = self.player.paused
+        if self.playing is not None:
+            self._now(f"⏸  Paused — {self._now_text}" if paused else f"▶  {self._now_text}")
+            self.pause_btn.configure(text="▶  Resume" if paused else "⏸  Pause")
+            self._update_row(self.playing, play="⏸" if paused else "■")
+        if self.current_review and self.current_review.previewing:
+            self.current_review.show_paused(paused)
+
+    def _on_space(self, event):
+        try:
+            if event.widget.winfo_class() in ("Entry", "TEntry", "Text", "Spinbox", "TCombobox"):
+                return None                      # typing a space in a text field
+        except (tk.TclError, AttributeError):
+            pass
+        if self.player.active:
+            self.toggle_pause()
+        elif event.widget.winfo_toplevel() is self.root and self.playlist and self.tree.selection():
+            self.toggle_preview(int(self.tree.selection()[0]))
+        return "break"
 
     def stop_preview(self):
         self.player.stop()
