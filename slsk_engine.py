@@ -138,6 +138,8 @@ class Engine:
         self._job_running = False
         self._queue_added = asyncio.Event()
         self._extend: dict[int, float] = {}    # extra queue patience per track (right-click → extend)
+        self._previews: dict[tuple[str, str], object] = {}   # (user, path) -> Transfer being previewed
+        self._adopted: dict[tuple[str, str], object] = {}    # previews the user then chose to download
         self._online = asyncio.Event()         # set while logged in to the Soulseek server
         self._kicked = False                   # server closed us on purpose (same account elsewhere)
         threading.Thread(target=self.loop.run_forever, daemon=True, name="slsk").start()
@@ -220,6 +222,80 @@ class Engine:
             self.post("status", idx=idx, status="Waiting… (added to this job)", state="")
             log.info("track %d: added to running job", idx + 1)
         self._queue_added.set()
+
+    # ------------------------------------------------------------------ Soulseek previews
+    # A preview IS the real download: ▶ asks the uploader for the file and the GUI plays the file while it
+    # grows. Stop → the download is cancelled and the partial file removed. Choosing that result instead
+    # keeps the very same transfer going, so nothing is downloaded twice.
+    PREVIEW_BUFFER = 400_000        # bytes before playback starts (~10 s of MP3 320, ~3 s of FLAC)
+
+    def preview_start(self, cand: Candidate):
+        self.submit(self._preview(cand))
+
+    def preview_stop(self, cand: Candidate | None = None, keep: bool = False):
+        """Stop previewing `cand` (or everything). keep=True: the user chose it — hand it to the download."""
+        self.submit(self._preview_stop(None if cand is None else (cand.username, cand.path), keep))
+
+    async def _preview_stop(self, key, keep: bool):
+        for k in [key] if key else list(self._previews):
+            tr = self._previews.pop(k, None)
+            if tr is None:
+                continue
+            if keep:
+                self._adopted[k] = tr
+                continue
+            try:
+                if not tr.is_finalized():
+                    await self.client.transfers.abort(tr)
+                await self.client.transfers.remove(tr)
+            except Exception:
+                pass
+            # remove the partial file — and again a moment later, in case a last chunk was still being written
+            for delay in (0, 1.0):
+                await asyncio.sleep(delay)
+                if tr.local_path and os.path.exists(tr.local_path):
+                    try:
+                        os.remove(tr.local_path)
+                    except OSError:
+                        pass
+
+    async def _preview(self, cand: Candidate):
+        key = (cand.username, cand.path)
+        await self._preview_stop(None, keep=False)           # one preview at a time
+        if self.client is None:
+            self.post("slsk_preview", key=key, error="Not connected to Soulseek.")
+            return
+        tr = await self.client.transfers.download(cand.username, cand.path)
+        self._previews[key] = tr
+        start, ready = self.loop.time(), False
+        while self._previews.get(key) is tr:
+            await asyncio.sleep(0.5)
+            if self._previews.get(key) is not tr:
+                return                       # stopped, or handed to the real download, while we slept
+            st, waited = tr.state.VALUE, int(self.loop.time() - start)
+            if st in (TransferState.FAILED, TransferState.ABORTED):
+                self._previews.pop(key, None)
+                self.post("slsk_preview", key=key, error=f"{cand.username}: {tr.fail_reason or 'download failed'}")
+                return
+            size = tr.filesize or cand.size or 0
+            got = tr.bytes_transfered or 0
+            if got and tr.local_path and os.path.exists(tr.local_path):
+                if not ready and (got >= min(self.PREVIEW_BUFFER, size or self.PREVIEW_BUFFER)
+                                  or st == TransferState.COMPLETE):
+                    ready = True
+                    self.post("slsk_preview", key=key, ready=tr.local_path)
+                pct = 100 * got / size if size else 0
+                self.post("slsk_preview", key=key,
+                          status=("Downloaded — playing" if st == TransferState.COMPLETE else
+                                  f"{'Playing' if ready else 'Buffering'} · downloading {pct:.0f}% "
+                                  f"({tr.get_speed() / 1e6:.1f} MB/s)"))
+                if st == TransferState.COMPLETE:
+                    return
+            elif tr.remotely_queued:
+                where = f" #{tr.place_in_queue}" if tr.place_in_queue else ""
+                self.post("slsk_preview", key=key, status=f"In {cand.username}'s queue{where} · {waited}s")
+            else:
+                self.post("slsk_preview", key=key, status=f"Connecting to {cand.username}… {waited}s")
 
     def extend_timeout(self, indices: list[int], seconds: float):
         """Right-click → extend: give these tracks more time in uploaders' queues (inf = no limit)."""
@@ -728,7 +804,9 @@ class Engine:
 
     async def _download(self, idx: int, cand: Candidate, opts: JobOptions, patience: int) -> tuple[str | None, str]:
         """Returns (local path, "") on success or (None, reason) on failure."""
-        tr = await self.client.transfers.download(cand.username, cand.path)
+        # chosen while previewing: continue that very transfer instead of requesting the file again
+        tr = self._adopted.pop((cand.username, cand.path), None) or \
+            await self.client.transfers.download(cand.username, cand.path)
         start = last_move = self.loop.time()
         last_bytes = -1
         reason = ""

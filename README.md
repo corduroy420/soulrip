@@ -86,6 +86,10 @@ MP3s without a reported bitrate get one estimated from file size and length.
 
 ## Behaviour
 
+- **Previews (test branch):** every track shows its cover, and ▶ plays it. That's Spotify's 30-second clip, or
+  the SoundCloud or YouTube stream (not DRM tracks). In the review window, **▶ Preview selected** starts downloading
+  that Soulseek result and plays it as it arrives. Keep it with **Download selected**, or stop it and the partial
+  file is deleted. Busy uploaders still mean waiting in their queue. Previews need ffmpeg (its `ffplay`).
 - **Skip selected** (while a job runs): select one or more tracks and skip them. This stops their search, queue wait or download, cancels the request with the uploader, and frees the download slot for the next track. Finished tracks are left alone. Retry skipped tracks with **Download selected**. It works mid-job too, adding the tracks to the running job
   (tracks already downloaded or in progress are ignored).
 - **Right-click → Extend queue timeout** on a track waiting in an uploader's queue gives it +5 min, +30 min or no limit. Use it when you really want that track and don't mind waiting.

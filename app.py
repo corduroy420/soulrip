@@ -23,6 +23,9 @@ import customtkinter as ctk
 import converter
 import matcher
 import net
+import player
+import previews
+import thumbs
 import ui
 import updater
 from version import __version__
@@ -197,10 +200,22 @@ class ReviewDialog(ctk.CTkToplevel):
         self.protocol("WM_DELETE_WINDOW", self.skip)
         ui.fix_icon(self, app._icon)
 
+        self.track = track
+        self.previewing = None          # Soulseek result being previewed (its download is running)
         f = ctk.CTkFrame(self, fg_color="transparent")
         f.pack(fill="both", expand=True, padx=16, pady=14)
-        ctk.CTkLabel(f, text="Wanted", text_color=ui.MUTED).pack(anchor="w")
-        ctk.CTkLabel(f, text=f"{track.display}    [{fmt_len(track.duration)}]", font=ui.font(18, True)).pack(anchor="w")
+        head = ctk.CTkFrame(f, fg_color="transparent")
+        head.pack(fill="x")
+        self.cover = ctk.CTkLabel(head, text="", width=64, height=64, fg_color=ui.MUTED, corner_radius=6)
+        self.cover.pack(side="left", padx=(0, 12))
+        app.thumbs.request("review", track, 64, lambda _k, img: self.winfo_exists() and self.cover.configure(
+            image=img, fg_color="transparent"), ctk_image=True)
+        words = ctk.CTkFrame(head, fg_color="transparent")
+        words.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(words, text="Wanted", text_color=ui.MUTED).pack(anchor="w")
+        ctk.CTkLabel(words, text=f"{track.display}    [{fmt_len(track.duration)}]", font=ui.font(18, True)).pack(
+            anchor="w")
+        ui.secondary(head, "▶  Play original", self.play_original, width=150).pack(side="right")
         if note:
             msg = (f"Download failed — {note}. Double-click the track in the main window for details. "
                    + ("Pick another source below, search again, or skip." if cands else
@@ -219,6 +234,10 @@ class ReviewDialog(ctk.CTkToplevel):
             widths=dict(match=60, quality=90, length=60, size=75, user=130, slot=45, file=480, notes=190),
             tags={"good": ui.GOOD, "mid": ui.WARN, "bad": ui.BAD})
         tf.pack(fill="both", expand=True)
+        self.pstatus = ctk.CTkLabel(f, text="Tip: ▶ Preview selected starts downloading that file and plays it "
+                                            "as it arrives. Keep it with Download selected, or stop it.",
+                                    text_color=ui.MUTED, font=ui.font(12), anchor="w")
+        self.pstatus.pack(fill="x", pady=(6, 0))
         for i, c in enumerate(cands):
             tag = "good" if c.score >= threshold else "mid" if c.score >= threshold - 20 else "bad"
             self.tree.insert("", "end", iid=str(i), tags=(tag,), values=(
@@ -237,6 +256,10 @@ class ReviewDialog(ctk.CTkToplevel):
         qe.bind("<Return>", lambda e: self.research())
         ui.secondary(bar, "Search again", self.research).pack(side="left")
         ctk.CTkButton(bar, text="Download selected", command=self.download).pack(side="right")
+        self.prev_btn = ui.secondary(bar, "▶  Preview selected", self.preview_selected, width=160)
+        self.prev_btn.pack(side="right", padx=6)
+        if not cands:
+            ui.set_enabled(self.prev_btn, False)
         ui.secondary(bar, "Skip", self.skip, width=80).pack(side="right", padx=6)
         if stream:
             kb = f"{track.sc_stream_kbps}k " if track.sc_stream_kbps else ""
@@ -250,9 +273,72 @@ class ReviewDialog(ctk.CTkToplevel):
         ui.reveal(self, center_on=app.root)
 
     def _done(self, choice):
+        # the previewed result was chosen: keep its download going instead of starting it again
+        keep = bool(self.previewing) and choice[0] == "pick" and choice[1] is self.previewing
+        self.stop_slsk_preview(keep=keep)
         self.reply(choice)
         self.destroy()
         self.app.review_closed()
+
+    def destroy(self):
+        self.stop_slsk_preview()        # closed some other way (track skipped from the main window…)
+        super().destroy()
+
+    # ---- previews
+    def play_original(self):
+        idx = getattr(self.app, "current_review_idx", None)
+        if idx is not None:
+            self.stop_slsk_preview()
+            self.app.toggle_preview(idx)
+
+    def preview_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        cand = self.cands[int(sel[0])]
+        if self.previewing is cand:
+            self.stop_slsk_preview()
+            return
+        if not self.app.player.available:
+            messagebox.showinfo(APP, f"Previews play through ffmpeg's player.\n\nInstall ffmpeg with:  "
+                                     f"{converter.FFMPEG_HINT}", parent=self)
+            return
+        self.stop_slsk_preview()
+        self.app.stop_preview()
+        self.previewing = cand
+        self.prev_btn.configure(text="■  Stop preview")
+        self.pstatus.configure(text=f"Asking {cand.username} for {cand.filename}…", text_color=ui.INFO)
+        self.app.engine.preview_start(cand)
+
+    def stop_slsk_preview(self, keep: bool = False):
+        if not self.previewing:
+            return
+        self.app.engine.preview_stop(self.previewing, keep=keep)
+        self.previewing = None
+        if self.app.playing is None:
+            self.app.player.stop()
+        try:
+            self.prev_btn.configure(text="▶  Preview selected")
+            self.pstatus.configure(text="Preview stopped." if not keep else "Downloading the previewed file…",
+                                   text_color=ui.MUTED)
+        except tk.TclError:
+            pass
+
+    def on_slsk_preview(self, d):
+        """Progress of the Soulseek preview (from the engine)."""
+        if not self.previewing or d["key"] != (self.previewing.username, self.previewing.path):
+            return
+        if d.get("error"):
+            self.previewing = None
+            self.prev_btn.configure(text="▶  Preview selected")
+            self.pstatus.configure(text=f"Preview failed — {d['error']}", text_color=ui.BAD)
+        elif d.get("ready"):
+            try:
+                self.app.player.play(d["ready"], self.previewing.filename, growing_file=True)
+            except RuntimeError as e:
+                self.pstatus.configure(text=str(e), text_color=ui.BAD)
+        elif d.get("status"):
+            self.pstatus.configure(text=d["status"], text_color=ui.INFO)
 
     def download(self):
         sel = self.tree.selection()
@@ -611,7 +697,8 @@ class ConvertDialog(ctk.CTkToplevel):
 # =========================================================================== main window
 
 class App:
-    COLS = ("n", "artist", "title", "length", "match", "quality", "status")
+    COLS = ("play", "n", "artist", "title", "length", "match", "quality", "status")
+    COL = {c: i for i, c in enumerate(COLS)}         # column name -> index in a row's values
 
     def __init__(self):
         self.root = ctk.CTk()
@@ -663,6 +750,10 @@ class App:
         self.reject_fake = tk.BooleanVar(value=self.cfg.get("reject_fake", True))
         self.number = tk.BooleanVar(value=self.cfg.get("number", False))
         self.add_art = tk.BooleanVar(value=self.cfg.get("add_art", True))
+        self.player = player.Player()
+        self.playing: int | None = None                           # row whose preview is playing
+        self.thumbs = thumbs.ThumbLoader(lambda fn, *a: self.events.put(("call", {"fn": fn, "args": a})))
+        self._fill_gen = 0                                        # ignore thumbnails from an older playlist
         self.downloaded: list[tuple[str, object, object]] = []   # (path, track, SpectrumCheck) this job
         self.attempts: dict[int, list[str]] = {}                  # per-track source attempts, for the details view
 
@@ -693,6 +784,7 @@ class App:
         gx = dict(sticky="w", padx=(0, 10))
         ctk.CTkLabel(opts, text="Quality").grid(row=0, column=0, **gx)
         self.preset_box = ctk.CTkOptionMenu(opts, variable=self.preset, values=list(matcher.QUALITY_PRESETS),
+                                            command=lambda _v: self._update_fake_cb(),
                                             width=380, dynamic_resizing=False)
         self.preset_box.grid(row=0, column=1, columnspan=2, **gx)
         ctk.CTkLabel(opts, text="Auto-download if match ≥").grid(row=0, column=3, **gx)
@@ -728,6 +820,7 @@ class App:
         self.sc_label = ctk.CTkLabel(opts, text="", text_color=ui.MUTED)
         self.sc_label.grid(row=3, column=5, columnspan=3, sticky="w", pady=(14, 0), padx=(10, 0))
         self._sc_status()
+        self._update_fake_cb()
 
         of = ctk.CTkFrame(root, fg_color="transparent")
         of.pack(fill="x", padx=16, pady=8)
@@ -736,18 +829,26 @@ class App:
         ui.secondary(of, "Browse…", self.browse, width=100).pack(side="left")
 
         tf, self.tree = ui.table(
-            root, self.COLS, stretch=("title", "status"),
-            headings=dict(n="#", artist="Artist", title="Title", length="Length", match="Match",
+            root, self.COLS, stretch=("title", "status"), image_col=40, centered=("play",),
+            headings=dict(play="", n="#", artist="Artist", title="Title", length="Length", match="Match",
                           quality="Quality", status="Status"),
-            widths=dict(n=44, artist=200, title=300, length=64, match=64, quality=100, status=340),
+            widths=dict(play=36, n=40, artist=190, title=290, length=60, match=60, quality=100, status=330),
             tags={"done": ui.GOOD, "fail": ui.BAD, "ask": ui.WARN, "skip": ui.MUTED, "dl": ui.INFO})
         tf.pack(fill="both", expand=True, padx=16, pady=(4, 0))
         self.tree.bind("<Double-1>", self.show_attempts)
+        self.tree.bind("<ButtonRelease-1>", self._on_tree_click)
+
+        # "Now playing" bar, shown only while a preview plays
+        self.now = ctk.CTkFrame(root)
+        self.now_label = ctk.CTkLabel(self.now, text="", anchor="w")
+        self.now_label.pack(side="left", fill="x", expand=True, padx=14, pady=8)
+        ctk.CTkButton(self.now, text="■  Stop", width=90, command=self.stop_preview,
+                      fg_color=ui.STOP, hover_color=ui.STOP_HOVER).pack(side="right", padx=10, pady=8)
         for seq in ("<Button-2>", "<Button-3>", "<Control-Button-1>"):   # right-click on macOS + others
             self.tree.bind(seq, self.row_menu)
         self.waiting_rows: set[int] = set()    # tracks currently waiting in an uploader's queue
 
-        bot = ctk.CTkFrame(root, fg_color="transparent")
+        bot = self.bot = ctk.CTkFrame(root, fg_color="transparent")
         bot.pack(fill="x", padx=16, pady=14)
         self.start_btn = ctk.CTkButton(bot, text="▶  Find & download all", command=self.start_all, width=180)
         self.start_btn.pack(side="left")
@@ -870,7 +971,7 @@ class App:
         return JobOptions(out_dir=self.out_dir.get(), preset=self.preset.get(),
                           threshold=float(self.threshold.get()), always_ask=self.always_ask.get(),
                           rename=self.rename.get(), skip_existing=self.skip_existing.get(),
-                          parallel=max(1, int(self.parallel.get())), reject_fake=self.reject_fake.get(),
+                          parallel=max(1, int(self.parallel.get())), reject_fake=self.reject_fake.get() and self._fake_check_applies(),
                           number=self.number.get(), add_art=self.add_art.get(),
                           sc_mode=SC_MODES[2] if self.soundcloud_only else self.sc_mode.get(),
                           sc_token=self.sc_token)
@@ -925,6 +1026,7 @@ class App:
         ui.set_enabled(self.skip_btn, running)
 
     def quit(self):
+        self.player.stop()
         self.cfg.update(out_dir=self.out_dir.get())
         save_config(self.cfg)
         self.engine.cancel_job()
@@ -946,8 +1048,11 @@ class App:
             if t.free_dl:
                 hint.append("free DL link")
             self.tree.insert("", "end", iid=str(i),
-                             values=(i + 1, t.artist, t.title, fmt_len(t.duration), "", "",
-                                     " · ".join(hint)))
+                             values=("▶", i + 1, t.artist, t.title, fmt_len(t.duration), "", "", " · ".join(hint)))
+        self._fill_gen += 1
+        gen = self._fill_gen
+        for i, t in enumerate(pl.tracks):
+            self.thumbs.request((gen, i), t, 24, self._set_thumb)
 
     # ------------------------------------------------------------------ SoundCloud login
     def _sc_status(self):
@@ -964,6 +1069,13 @@ class App:
 
     SC_ONLY_QUALITY = "SoundCloud stream / official download"
 
+    def _fake_check_applies(self) -> bool:
+        """The fake-lossless check only matters when FLAC can be downloaded."""
+        return not self.soundcloud_only and self.preset.get() != "No FLAC: MP3 → M4A → anything else"
+
+    def _update_fake_cb(self):
+        ui.set_enabled(self.fake_cb, self._fake_check_applies())
+
     def set_soundcloud_only(self, on: bool):
         """SoundCloud-only mode: no Soulseek, so the Soulseek quality/matching options don't apply."""
         self.soundcloud_only = on
@@ -979,6 +1091,7 @@ class App:
         self.root.title(f"{APP} {__version__}" + (" — SoundCloud only" if on else ""))
         for w in (self.preset_box, self.threshold_box, self.ask_cb, self.fake_cb, self.sc_mode_box):
             ui.set_enabled(w, not on)
+        self._update_fake_cb()
         if on:
             self.status.configure(text="● SoundCloud-only mode — Soulseek is off (Account → Log in to Soulseek…)",
                                text_color=ui.ORANGE)
@@ -997,17 +1110,24 @@ class App:
         save_config(self.cfg)
         self._sc_status()
 
-    def _update_row(self, idx, status=None, state=None, match=None, quality=None):
+    def _set_thumb(self, key, photo):
+        gen, i = key
+        if gen == self._fill_gen and self.tree.exists(str(i)):
+            self.tree.item(str(i), image=photo)
+
+    def _update_row(self, idx, status=None, state=None, match=None, quality=None, play=None):
         iid = str(idx)
         if not self.tree.exists(iid):
             return
         vals = list(self.tree.item(iid, "values"))
         if match is not None:
-            vals[4] = match
+            vals[self.COL["match"]] = match
         if quality is not None:
-            vals[5] = quality
+            vals[self.COL["quality"]] = quality
         if status is not None:
-            vals[6] = status
+            vals[self.COL["status"]] = status
+        if play is not None:
+            vals[self.COL["play"]] = play
         kw = {"values": vals}
         if state is not None:
             kw["tags"] = (state,) if state else ()
@@ -1108,6 +1228,7 @@ class App:
         elif kind == "info":
             self.status.configure(text=d["msg"])
         elif kind == "playlist":
+            self.stop_preview()
             self.playlist = d["pl"]
             ui.set_enabled(self.load_btn, True)
             self._fill(self.playlist)
@@ -1132,6 +1253,9 @@ class App:
                              quality=d.get("quality"))
         elif kind == "ask":
             self._queue_review(d)
+        elif kind == "slsk_preview":
+            if self.current_review:
+                self.current_review.on_slsk_preview(d)
         elif kind == "unask":
             self._drop_reviews(d["idx"])
         elif kind == "attempt":
@@ -1166,6 +1290,83 @@ class App:
                         f"({port}) isn't open on your router. Turn on UPnP in your router settings, or "
                         f"forward TCP port {port} to this Mac. Also make sure no other Soulseek client "
                         "(Nicotine+, etc.) is running on the same port."))
+
+    # ------------------------------------------------------------------ previews
+    def _on_tree_click(self, event):
+        if self.tree.identify_region(event.x, event.y) != "cell":
+            return
+        col = self.tree.identify_column(event.x)            # "#1" = first data column ("play")
+        row = self.tree.identify_row(event.y)
+        if row and col == f"#{self.COL['play'] + 1}":
+            self.toggle_preview(int(row))
+
+    def toggle_preview(self, idx: int):
+        if self.playing == idx:
+            self.stop_preview()
+            return
+        if not self.player.available:
+            messagebox.showinfo(APP, f"Previews play through ffmpeg's player.\n\nInstall ffmpeg with:  "
+                                     f"{converter.FFMPEG_HINT}")
+            return
+        self.stop_preview()
+        if self.current_review:
+            self.current_review.stop_slsk_preview()
+        track = self.playlist.tracks[idx]
+        self._update_row(idx, play="…")
+        self.playing = idx
+        self._now(f"Loading preview — {track.display}…")
+
+        def work():
+            try:
+                url, headers, desc = previews.resolve(track, self.sc_token)
+                self.events.put(("call", {"fn": self._start_play, "args": (idx, url, headers, desc)}))
+            except previews.PreviewError as e:
+                self.events.put(("call", {"fn": self._preview_failed, "args": (idx, str(e))}))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _start_play(self, idx, url, headers, desc):
+        if self.playing != idx:
+            return                                        # stopped / another track chosen meanwhile
+        track = self.playlist.tracks[idx]
+        try:
+            self.player.play(url, track.display, headers=headers)
+        except RuntimeError as e:
+            self._preview_failed(idx, str(e))
+            return
+        self._update_row(idx, play="■")
+        self._now(f"▶  {track.display}   ·   {desc}")
+        self.root.after(500, self._poll_player)
+
+    def _preview_failed(self, idx, msg):
+        if self.playing == idx:
+            self.playing = None
+            self._update_row(idx, play="▶")
+            self._now(None)
+        self.status.configure(text=msg, text_color=ui.WARN)
+
+    def _poll_player(self):
+        if self.playing is None:
+            return
+        if self.player.playing:
+            self.root.after(500, self._poll_player)
+        else:                                             # preview reached its end
+            self.stop_preview()
+
+    def stop_preview(self):
+        self.player.stop()
+        if self.playing is not None:
+            self._update_row(self.playing, play="▶")
+        self.playing = None
+        self._now(None)
+
+    def _now(self, text):
+        """Show / hide the "Now playing" bar."""
+        if text:
+            self.now_label.configure(text=text)
+            if not self.now.winfo_ismapped():
+                self.now.pack(fill="x", padx=16, pady=(8, 0), before=self.bot)
+        elif self.now.winfo_ismapped():
+            self.now.pack_forget()
 
     # ------------------------------------------------------------------ right-click
     def row_menu(self, event):
@@ -1275,6 +1476,9 @@ def self_test(report_path: str):
         import sqlite3  # noqa: F401 — needed to read Firefox/Chrome cookies ("Log in with your browser")
         from yt_dlp.cookies import extract_cookies_from_browser  # noqa: F401
         results["browser_login"] = True
+        from PIL import Image, ImageTk  # noqa: F401 — cover thumbnails
+        import player as _player
+        results["ffplay"] = _player.ffplay_path()       # optional, like ffmpeg (needed for previews)
         import keyring
         results["keyring_backend"] = type(keyring.get_keyring()).__name__
         import titleparse

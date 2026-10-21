@@ -77,13 +77,18 @@ def style_tables(_mode=None):
 
 
 def table(master, columns, headings: dict, widths: dict, stretch=(), selectmode="extended",
-          tags: dict | None = None) -> tuple[ctk.CTkFrame, ttk.Treeview]:
-    """A rounded CTk frame holding a styled ttk.Treeview and a CTk scrollbar."""
+          tags: dict | None = None, image_col: int = 0, centered=()) -> tuple[ctk.CTkFrame, ttk.Treeview]:
+    """A rounded CTk frame holding a styled ttk.Treeview and a CTk scrollbar.
+    image_col > 0 adds a leading column of that width for per-row images (cover thumbnails)."""
     frame = ctk.CTkFrame(master)
-    tree = ttk.Treeview(frame, columns=columns, show="headings", selectmode=selectmode)
+    tree = ttk.Treeview(frame, columns=columns, show="tree headings" if image_col else "headings",
+                        selectmode=selectmode)
+    if image_col:
+        tree.heading("#0", text="")
+        tree.column("#0", width=image_col, minwidth=image_col, stretch=False, anchor="center")
     for c in columns:
         tree.heading(c, text=headings[c], anchor="w")
-        tree.column(c, width=widths[c], anchor="w", stretch=c in stretch)
+        tree.column(c, width=widths[c], anchor="center" if c in centered else "w", stretch=c in stretch)
     sb = ctk.CTkScrollbar(frame, command=tree.yview)
     tree.configure(yscrollcommand=sb.set)
     tree.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)

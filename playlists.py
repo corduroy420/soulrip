@@ -37,6 +37,8 @@ class Track:
     sc_stream_kbps: int | None = None
     sc_hq: bool = False            # premium (Go+) formats offered to this login
     free_dl: str = ""              # "Free download" link (Hypeddit etc.) — needs a browser
+    thumb_url: str = ""            # small cover image for the track list ("" = look it up, see thumbs.py)
+    preview_url: str = ""          # direct audio preview (Spotify's 30-second clip)
     # Other plausible (artist, title, artists, reliable) readings of a messy title; scored too
     alts: list[tuple[str, str, list[str], bool]] = field(default_factory=list)
 
@@ -98,6 +100,7 @@ def _spotify(url: str) -> Playlist:
             title=t.get("title") or t.get("name") or "",
             duration=round(dur / 1000) if dur else None,
             source_url=t.get("uri", ""),
+            preview_url=(t.get("audioPreview") or {}).get("url", ""),
         ))
     return Playlist(entity.get("name") or "Spotify playlist", tracks, "Spotify")
 
@@ -164,6 +167,9 @@ def _soundcloud(url: str, progress=None, token: str | None = None) -> Playlist:
                    duration=round(dur / 1000) if dur else None,
                    source_url=t.get("permalink_url", ""), artist_reliable=best.reliable,
                    art_url=(t.get("artwork_url") or "").replace("-large", "-t500x500"),
+                   # SoundCloud serves every size of the cover; "-badge" is 47 px — plenty for a row icon
+                   thumb_url=(t.get("artwork_url") or (t.get("user") or {}).get("avatar_url") or ""
+                              ).replace("-large", "-badge"),
                    alts=[(h.artist, h.title, h.artists, h.reliable) for h in hyps[1:]])
         annotate(tr, t)
         tracks.append(tr)
@@ -208,5 +214,6 @@ def _youtube(url: str) -> Playlist:
         artists = [a.strip() for a in re.split(r",|&| x | feat\.? | ft\.? ", artist, flags=re.I) if a.strip()]
         tracks.append(Track(artist=artist.strip(), artists=artists or [artist], title=title.strip(),
                             duration=int(e["duration"]) if e.get("duration") else None,
-                            source_url=e.get("url") or "", artist_reliable=reliable))
+                            source_url=e.get("url") or "", artist_reliable=reliable,
+                            thumb_url=f"https://i.ytimg.com/vi/{e['id']}/default.jpg" if e.get("id") else ""))
     return Playlist(info.get("title") or "YouTube playlist", tracks, "YouTube")
