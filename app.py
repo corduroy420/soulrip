@@ -16,11 +16,14 @@ import threading
 import tkinter as tk
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
+
+import customtkinter as ctk
 
 import converter
 import matcher
 import net
+import ui
 import updater
 from version import __version__
 from playlists import Playlist, PlaylistError, fetch_playlist
@@ -79,22 +82,26 @@ def fmt_size(b) -> str:
 
 # =========================================================================== login
 
-class LoginDialog(tk.Toplevel):
+class LoginDialog(ctk.CTkToplevel):
     def __init__(self, app: "App", relogin: bool = False):
         super().__init__(app.root)
+        ui.begin(self)
         self.app = app
         self.title("Soulseek login")
         self.resizable(False, False)
         # first login: closing quits the app; re-login after a kick: closing just dismisses
         self.protocol("WM_DELETE_WINDOW", (lambda: (self.grab_release(), self.destroy(),
                                                     setattr(app, "login_dlg", None))) if relogin else app.quit)
+        ui.fix_icon(self, app._icon)
         cfg = app.cfg
 
-        f = ttk.Frame(self, padding=18)
-        f.pack(fill="both", expand=True)
-        ttk.Label(f, text="Log in to Soulseek", font=("", 15, "bold")).grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(f, text="A username that doesn't exist yet is registered automatically by Soulseek.",
-                  foreground="gray").grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 12))
+        f = ctk.CTkFrame(self, fg_color="transparent")
+        f.pack(fill="both", expand=True, padx=24, pady=22)
+        f.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(f, text="Log in to Soulseek", font=ui.font(20, True)).grid(
+            row=0, column=0, columnspan=2, sticky="w")
+        ctk.CTkLabel(f, text="A username that doesn't exist yet is registered automatically by Soulseek.",
+                     text_color=ui.MUTED).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 14))
 
         self.user = tk.StringVar(value=cfg.get("username", ""))
         self.pw = tk.StringVar()
@@ -106,41 +113,59 @@ class LoginDialog(tk.Toplevel):
             except Exception:
                 pass
 
-        ttk.Label(f, text="Username").grid(row=2, column=0, sticky="w")
-        eu = ttk.Entry(f, textvariable=self.user, width=30)
-        eu.grid(row=2, column=1, pady=3)
-        ttk.Label(f, text="Password").grid(row=3, column=0, sticky="w")
-        ep = ttk.Entry(f, textvariable=self.pw, show="•", width=30)
-        ep.grid(row=3, column=1, pady=3)
-        ttk.Label(f, text="Listen port").grid(row=4, column=0, sticky="w")
-        ttk.Entry(f, textvariable=self.port, width=8).grid(row=4, column=1, sticky="w", pady=3)
-        cb = ttk.Checkbutton(f, text="Remember password (macOS Keychain)", variable=self.remember)
-        cb.grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ctk.CTkLabel(f, text="Username").grid(row=2, column=0, sticky="w", padx=(0, 14))
+        eu = ctk.CTkEntry(f, textvariable=self.user, width=280)
+        eu.grid(row=2, column=1, sticky="ew", pady=4)
+        ctk.CTkLabel(f, text="Password").grid(row=3, column=0, sticky="w", padx=(0, 14))
+        ep = ctk.CTkEntry(f, textvariable=self.pw, show="•", width=280)
+        ep.grid(row=3, column=1, sticky="ew", pady=4)
+        ctk.CTkLabel(f, text="Listen port").grid(row=4, column=0, sticky="w", padx=(0, 14))
+        ctk.CTkEntry(f, textvariable=self.port, width=90).grid(row=4, column=1, sticky="w", pady=4)
+        cb = ctk.CTkCheckBox(f, text="Remember password (system keychain)", variable=self.remember)
+        cb.grid(row=5, column=0, columnspan=2, sticky="w", pady=(10, 0))
         if not keyring:
-            cb.state(["disabled"])
+            ui.set_enabled(cb, False)
 
-        self.msg = ttk.Label(f, text="", foreground="#c0392b", wraplength=320)
+        self.msg = ctk.CTkLabel(f, text="", text_color=ui.BAD, wraplength=400, justify="left")
         self.msg.grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        self.btn = ttk.Button(f, text="Log in", command=self.submit)
-        self.btn.grid(row=7, column=1, sticky="e", pady=(10, 0))
+        bar = ctk.CTkFrame(f, fg_color="transparent")
+        bar.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ui.secondary(bar, "Use SoundCloud only", self.soundcloud_only).pack(side="left")
+        self.btn = ctk.CTkButton(bar, text="Log in", command=self.submit, width=110)
+        self.btn.pack(side="right")
+        ctk.CTkLabel(f, text="SoundCloud only: skip Soulseek and rip SoundCloud playlists from SoundCloud itself\n"
+                             "(the artist's download when offered, otherwise the stream).",
+                     text_color=ui.MUTED, justify="left", font=ui.font(12)).grid(
+            row=8, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
         self.bind("<Return>", lambda e: self.submit())
+        # first login: the main window is hidden, and a window "transient" for a hidden window is hidden
+        # too (macOS) — so it stands alone, centred on the screen
+        if relogin:
+            self.transient(app.root)
+        ui.reveal(self, center_on=app.root if relogin else None)
         (ep if self.user.get() else eu).focus_set()
-        self.transient(app.root)
-        self.grab_set()
+        ui.grab(self)
+
+    def soundcloud_only(self):
+        self.grab_release()
+        self.destroy()
+        self.app.login_dlg = None
+        self.app.set_soundcloud_only(True)
+        self.app.show_main()
 
     def submit(self):
         u, p = self.user.get().strip(), self.pw.get()
         if not u or not p:
-            self.msg.config(text="Enter a username and password.")
+            self.msg.configure(text="Enter a username and password.")
             return
         try:
             port = int(self.port.get())
         except ValueError:
-            self.msg.config(text="Port must be a number.")
+            self.msg.configure(text="Port must be a number.")
             return
-        self.btn.state(["disabled"])
-        self.msg.config(text="Connecting…", foreground="gray")
+        ui.set_enabled(self.btn, False)
+        self.msg.configure(text="Connecting…", text_color=ui.MUTED)
         self.app.cfg.update(username=u, port=port, remember=self.remember.get())
         save_config(self.app.cfg)
         if keyring:
@@ -154,27 +179,28 @@ class LoginDialog(tk.Toplevel):
         self.app.engine.login(u, p, port, os.path.join(self.app.out_dir.get(), ".incoming"))
 
     def failed(self, msg):
-        self.btn.state(["!disabled"])
-        self.msg.config(text=msg, foreground="#c0392b")
+        ui.set_enabled(self.btn, True)
+        self.msg.configure(text=msg, text_color=ui.BAD)
 
 
 # =========================================================================== review
 
-class ReviewDialog(tk.Toplevel):
+class ReviewDialog(ctk.CTkToplevel):
     COLS = ("match", "quality", "length", "size", "user", "slot", "file", "notes")
 
     def __init__(self, app: "App", track, cands, reply, threshold, note="", stream=False):
         super().__init__(app.root)
+        ui.begin(self)
         self.app, self.reply, self.cands = app, reply, cands
         self.title("Check this match")
-        self.geometry("1100x480")
+        self.geometry("1180x540")
         self.protocol("WM_DELETE_WINDOW", self.skip)
+        ui.fix_icon(self, app._icon)
 
-        f = ttk.Frame(self, padding=12)
-        f.pack(fill="both", expand=True)
-        ttk.Label(f, text="Wanted", foreground="gray").pack(anchor="w")
-        ttk.Label(f, text=f"{track.display}    [{fmt_len(track.duration)}]",
-                  font=("", 14, "bold")).pack(anchor="w")
+        f = ctk.CTkFrame(self, fg_color="transparent")
+        f.pack(fill="both", expand=True, padx=16, pady=14)
+        ctk.CTkLabel(f, text="Wanted", text_color=ui.MUTED).pack(anchor="w")
+        ctk.CTkLabel(f, text=f"{track.display}    [{fmt_len(track.duration)}]", font=ui.font(18, True)).pack(anchor="w")
         if note:
             msg = (f"Download failed — {note}. Double-click the track in the main window for details. "
                    + ("Pick another source below, search again, or skip." if cands else
@@ -184,24 +210,15 @@ class ReviewDialog(tk.Toplevel):
                    "Pick one to download, search again, or skip.")
         else:
             msg = "Nothing found in the chosen quality. Try a different search below, or skip."
-        ttk.Label(f, text=msg).pack(anchor="w", pady=(4, 8))
+        ctk.CTkLabel(f, text=msg, wraplength=1100, justify="left").pack(anchor="w", pady=(4, 8))
 
-        tf = ttk.Frame(f)
+        tf, self.tree = ui.table(
+            f, self.COLS, selectmode="browse", stretch=("file",),
+            headings=dict(match="Match", quality="Quality", length="Length", size="Size", user="User",
+                          slot="Slot", file="Folder / file", notes="Why not 100%"),
+            widths=dict(match=60, quality=90, length=60, size=75, user=130, slot=45, file=480, notes=190),
+            tags={"good": ui.GOOD, "mid": ui.WARN, "bad": ui.BAD})
         tf.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(tf, columns=self.COLS, show="headings", selectmode="browse")
-        widths = dict(match=60, quality=85, length=60, size=70, user=120, slot=45, file=480, notes=180)
-        heads = dict(match="Match", quality="Quality", length="Length", size="Size", user="User",
-                     slot="Slot", file="Folder / file", notes="Why not 100%")
-        for c in self.COLS:
-            self.tree.heading(c, text=heads[c])
-            self.tree.column(c, width=widths[c], stretch=c == "file", anchor="w")
-        sb = ttk.Scrollbar(tf, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=sb.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
-        self.tree.tag_configure("good", foreground="#1e8449")
-        self.tree.tag_configure("mid", foreground="#b9770e")
-        self.tree.tag_configure("bad", foreground="#c0392b")
         for i, c in enumerate(cands):
             tag = "good" if c.score >= threshold else "mid" if c.score >= threshold - 20 else "bad"
             self.tree.insert("", "end", iid=str(i), tags=(tag,), values=(
@@ -211,27 +228,26 @@ class ReviewDialog(tk.Toplevel):
             self.tree.selection_set("0")
         self.tree.bind("<Double-1>", lambda e: self.download())
 
-        bar = ttk.Frame(f)
-        bar.pack(fill="x", pady=(10, 0))
+        bar = ctk.CTkFrame(f, fg_color="transparent")
+        bar.pack(fill="x", pady=(12, 0))
         self.q = tk.StringVar(value=f"{track.artist} {matcher.core_title(track.title)}")
-        ttk.Label(bar, text="Search:").pack(side="left")
-        qe = ttk.Entry(bar, textvariable=self.q, width=45)
-        qe.pack(side="left", padx=4)
+        ctk.CTkLabel(bar, text="Search:").pack(side="left")
+        qe = ctk.CTkEntry(bar, textvariable=self.q, width=340)
+        qe.pack(side="left", padx=6)
         qe.bind("<Return>", lambda e: self.research())
-        ttk.Button(bar, text="Search again", command=self.research).pack(side="left")
-        ttk.Button(bar, text="Download selected", command=self.download).pack(side="right")
-        ttk.Button(bar, text="Skip", command=self.skip).pack(side="right", padx=6)
+        ui.secondary(bar, "Search again", self.research).pack(side="left")
+        ctk.CTkButton(bar, text="Download selected", command=self.download).pack(side="right")
+        ui.secondary(bar, "Skip", self.skip, width=80).pack(side="right", padx=6)
         if stream:
             kb = f"{track.sc_stream_kbps}k " if track.sc_stream_kbps else ""
-            ttk.Button(bar, text=f"Use SoundCloud stream ({kb}low quality)",
-                       command=lambda: self._done(("stream",))).pack(side="right", padx=6)
+            ui.secondary(bar, f"Use SoundCloud stream ({kb}low quality)",
+                         lambda: self._done(("stream",))).pack(side="right", padx=6)
         if track.free_dl:
-            ttk.Button(bar, text="Open free download link",
-                       command=lambda: webbrowser.open(track.free_dl)).pack(side="right", padx=6)
+            ui.secondary(bar, "Open free download link",
+                         lambda: webbrowser.open(track.free_dl)).pack(side="right", padx=6)
 
         self.transient(app.root)
-        self.lift()
-        self.focus_force()
+        ui.reveal(self, center_on=app.root)
 
     def _done(self, choice):
         self.reply(choice)
@@ -253,54 +269,133 @@ class ReviewDialog(tk.Toplevel):
 
 # =========================================================================== SoundCloud login
 
-class SoundCloudLoginDialog(tk.Toplevel):
-    HELP = ("SoundCloud doesn't allow third-party password logins, so Soulrip uses your browser's login token:\n\n"
-            "1.  Open soundcloud.com in Chrome, Safari or Firefox and make sure you're logged in.\n"
-            "2.  Open the developer tools  (Chrome: ⌥⌘I   ·   Safari: enable Develop menu, then ⌥⌘I).\n"
+class SoundCloudLoginDialog(ctk.CTkToplevel):
+    HELP = ("1.  Open soundcloud.com in your browser and make sure you're logged in.\n"
+            "2.  Open the developer tools  (Chrome: ⌥⌘I / F12   ·   Safari: enable the Develop menu, then ⌥⌘I).\n"
             "3.  Chrome: Application tab → Cookies → https://soundcloud.com\n"
             "     Safari: Storage tab → Cookies → soundcloud.com\n"
-            "4.  Find the cookie named  oauth_token  and copy its Value (looks like 2-123456-…).\n\n"
-            "The token is stored in your macOS Keychain and only sent to SoundCloud. It works like a "
-            "password for your account — don't share it. Logging out of SoundCloud in the browser "
-            "makes it expire; just paste a new one then.")
+            "4.  Copy the Value of the cookie named  oauth_token  (looks like 2-123456-…).")
 
     def __init__(self, app: "App"):
         super().__init__(app.root)
+        ui.begin(self)
         self.app = app
         self.title("SoundCloud login")
         self.resizable(False, False)
-        f = ttk.Frame(self, padding=16)
-        f.pack(fill="both", expand=True)
-        ttk.Label(f, text="Connect your SoundCloud account", font=("", 14, "bold")).pack(anchor="w")
-        ttk.Label(f, text="Used for official downloads (the artist's original file) and Go+ streams.",
-                  foreground="gray").pack(anchor="w", pady=(2, 10))
-        ttk.Label(f, text=self.HELP, wraplength=560, justify="left").pack(anchor="w")
-        row = ttk.Frame(f)
-        row.pack(fill="x", pady=(12, 0))
-        ttk.Label(row, text="oauth_token").pack(side="left")
+        ui.fix_icon(self, app._icon)
+        f = ctk.CTkFrame(self, fg_color="transparent")
+        f.pack(fill="both", expand=True, padx=22, pady=20)
+        ctk.CTkLabel(f, text="Connect your SoundCloud account", font=ui.font(20, True)).pack(anchor="w")
+        ctk.CTkLabel(f, text="Used for official downloads (the artist's original file) and Go+ streams. "
+                             "SoundCloud doesn't allow other apps to log in with a password, so Soulrip uses the "
+                             "login your browser already has.", text_color=ui.MUTED, wraplength=580,
+                     justify="left").pack(anchor="w", pady=(2, 14))
+
+        # ---- easy way: take the login from a browser
+        box = ctk.CTkFrame(f)
+        box.pack(fill="x")
+        inner = ctk.CTkFrame(box, fg_color="transparent")
+        inner.pack(fill="x", padx=16, pady=14)
+        ctk.CTkLabel(inner, text="Log in with your browser (easiest)", font=ui.font(14, True)).pack(anchor="w")
+        browsers = sc_direct.installed_browsers()
+        self.browser_keys = {label: key for label, key in browsers}
+        self.browser = tk.StringVar()
+        row = ctk.CTkFrame(inner, fg_color="transparent")
+        row.pack(fill="x", pady=(8, 0))
+        ctk.CTkLabel(row, text="Browser").pack(side="left")
+        combo = ctk.CTkOptionMenu(row, variable=self.browser, values=list(self.browser_keys) or ["none found"],
+                                  width=200, dynamic_resizing=False)
+        combo.pack(side="left", padx=8)
+        saved = app.cfg.get("sc_browser")
+        if browsers:
+            self.browser.set(next((l for l, k in browsers if k == saved), browsers[0][0]))
+        steps = ctk.CTkFrame(inner, fg_color="transparent")
+        steps.pack(fill="x", pady=(10, 0))
+        self.open_btn = ui.secondary(steps, "1.  Open SoundCloud to log in", self.open_browser)
+        self.open_btn.pack(side="left")
+        self.grab_btn = ctk.CTkButton(steps, text="2.  I'm logged in — connect", command=self.from_browser)
+        self.grab_btn.pack(side="left", padx=8)
+        note = ("Already logged in to SoundCloud in that browser? Skip step 1.")
+        if sys.platform == "darwin":
+            note += (" For Chrome, Brave, Edge, Opera or Vivaldi, macOS will ask if Soulrip may use the browser's "
+                     "\"Safe Storage\" key — click Allow (or Always Allow).")
+        ctk.CTkLabel(inner, text=note, text_color=ui.MUTED, wraplength=550, justify="left",
+                     font=ui.font(12)).pack(anchor="w", pady=(8, 0))
+        if not browsers:
+            for b in (combo, self.open_btn, self.grab_btn):
+                ui.set_enabled(b, False)
+            ctk.CTkLabel(inner, text="No supported browser found — use the manual way below.",
+                         text_color=ui.BAD).pack(anchor="w")
+
+        # ---- fallback: paste the token by hand
+        manual = ctk.CTkFrame(f)
+        manual.pack(fill="x", pady=(12, 0))
+        inner2 = ctk.CTkFrame(manual, fg_color="transparent")
+        inner2.pack(fill="x", padx=16, pady=14)
+        ctk.CTkLabel(inner2, text="Or paste the token yourself", font=ui.font(14, True)).pack(anchor="w")
+        ctk.CTkLabel(inner2, text=self.HELP, wraplength=550, justify="left", font=ui.font(12)).pack(
+            anchor="w", pady=(6, 0))
+        row = ctk.CTkFrame(inner2, fg_color="transparent")
+        row.pack(fill="x", pady=(10, 0))
+        ctk.CTkLabel(row, text="oauth_token").pack(side="left")
         self.tok = tk.StringVar()
-        e = ttk.Entry(row, textvariable=self.tok, show="•", width=46)
-        e.pack(side="left", padx=6)
-        e.focus_set()
-        self.msg = ttk.Label(f, text="", wraplength=560)
-        self.msg.pack(anchor="w", pady=(8, 0))
-        bar = ttk.Frame(f)
-        bar.pack(fill="x", pady=(10, 0))
-        self.save_btn = ttk.Button(bar, text="Verify & save", command=self.save)
-        self.save_btn.pack(side="right")
+        e = ctk.CTkEntry(row, textvariable=self.tok, show="•", width=300)
+        e.pack(side="left", padx=8)
+        self.save_btn = ctk.CTkButton(row, text="Verify & save", command=self.save, width=120)
+        self.save_btn.pack(side="left")
+
+        ctk.CTkLabel(f, text="The login is stored in your system keychain and only ever sent to SoundCloud. "
+                             "It works like a password — don't share it. If you log out of SoundCloud in the "
+                             "browser it stops working; just connect again.", text_color=ui.MUTED, wraplength=580,
+                     justify="left", font=ui.font(12)).pack(anchor="w", pady=(12, 0))
+        self.msg = ctk.CTkLabel(f, text="", wraplength=580, justify="left")
+        self.msg.pack(anchor="w", pady=(6, 0))
+        bar = ctk.CTkFrame(f, fg_color="transparent")
+        bar.pack(fill="x", pady=(8, 0))
         if app.sc_token:
-            ttk.Button(bar, text="Log out", command=self.logout).pack(side="right", padx=6)
-        ttk.Button(bar, text="Cancel", command=self.destroy).pack(side="right")
-        self.bind("<Return>", lambda ev: self.save())
+            ui.secondary(bar, "Log out", self.logout, width=90).pack(side="right", padx=6)
+        ui.secondary(bar, "Cancel", self.destroy, width=90).pack(side="right")
+        e.bind("<Return>", lambda ev: self.save())
         self.transient(app.root)
-        self.grab_set()
+        ui.reveal(self, center_on=app.root)
+        ui.grab(self)
+
+    def _browser_key(self) -> str | None:
+        key = self.browser_keys.get(self.browser.get())
+        if key:
+            self.app.cfg["sc_browser"] = key
+        return key
+
+    def open_browser(self):
+        key = self._browser_key()
+        if key:
+            sc_direct.open_signin(key)
+            self.msg.configure(text=f"Log in on the SoundCloud page in {self.browser.get()}, then click step 2.",
+                            text_color=ui.MUTED)
+
+    def from_browser(self):
+        key = self._browser_key()
+        if not key:
+            return
+        label = self.browser.get()
+        ui.set_enabled(self.grab_btn, False)
+        self.msg.configure(text=f"Reading your SoundCloud login from {label}…", text_color=ui.MUTED)
+
+        def work():
+            try:
+                token = sc_direct.token_from_browser(key)
+                info = sc_direct.verify_token(token)
+                self.app.events.put(("call", {"fn": self._ok, "args": (token, info)}))
+            except sc_direct.SCError as e:
+                self.app.events.put(("call", {"fn": self._fail, "args": (str(e),)}))
+        threading.Thread(target=work, daemon=True).start()
 
     def save(self):
         token = self.tok.get().strip().strip('"')
         if not token:
             return
-        self.save_btn.state(["disabled"])
-        self.msg.config(text="Checking with SoundCloud…", foreground="gray")
+        ui.set_enabled(self.save_btn, False)
+        self.msg.configure(text="Checking with SoundCloud…", text_color=ui.MUTED)
 
         def work():
             try:
@@ -327,12 +422,14 @@ class SoundCloudLoginDialog(tk.Toplevel):
         if not stored:
             messagebox.showinfo(APP, "Logged in for this session only (Keychain not available).", parent=self)
         if self.app.playlist and self.app.playlist.source == "SoundCloud":
-            self.app.status.config(text="Reload the playlist to see official downloads for your account.")
+            self.app.status.configure(text="Reload the playlist to see official downloads for your account.")
         self.destroy()
 
     def _fail(self, msg):
-        self.save_btn.state(["!disabled"])
-        self.msg.config(text=msg, foreground="#c0392b")
+        ui.set_enabled(self.save_btn, True)
+        if self.browser_keys:
+            ui.set_enabled(self.grab_btn, True)
+        self.msg.configure(text=msg, text_color=ui.BAD)
 
     def logout(self):
         if keyring:
@@ -350,40 +447,35 @@ class SoundCloudLoginDialog(tk.Toplevel):
 
 # =========================================================================== convert
 
-class ConvertDialog(tk.Toplevel):
+class ConvertDialog(ctk.CTkToplevel):
     """Review lossless files and encode the chosen ones to MP3 with LAME."""
     COLS = ("file", "format", "check", "result")
 
     def __init__(self, app: "App", items):
         super().__init__(app.root)
+        ui.begin(self)
         self.app = app
         self.items = items          # list of (path, track|None, SpectrumCheck|None)
         self.title("Convert to MP3")
-        self.geometry("980x520")
+        self.geometry("1020x560")
         self.busy = False
+        ui.fix_icon(self, app._icon)
 
-        f = ttk.Frame(self, padding=12)
-        f.pack(fill="both", expand=True)
+        f = ctk.CTkFrame(self, fg_color="transparent")
+        f.pack(fill="both", expand=True, padx=16, pady=14)
         if not converter.ffmpeg_path():
-            ttk.Label(f, text=f"ffmpeg isn't installed. Install it with:  {converter.FFMPEG_HINT}",
-                      foreground="#c0392b", font=("", 13, "bold")).pack(anchor="w")
-        ttk.Label(f, text=f"{len(items)} lossless file(s). Selected rows will be converted — "
-                          "files flagged as fake lossless are left unselected (converting them can't "
-                          "bring back lost quality).", wraplength=940).pack(anchor="w")
+            ctk.CTkLabel(f, text=f"ffmpeg isn't installed. Install it with:  {converter.FFMPEG_HINT}",
+                         text_color=ui.BAD, font=ui.font(14, True)).pack(anchor="w")
+        ctk.CTkLabel(f, text=f"{len(items)} lossless file(s). Selected rows will be converted — "
+                             "files flagged as fake lossless are left unselected (converting them can't "
+                             "bring back lost quality).", wraplength=960, justify="left").pack(anchor="w")
 
-        tf = ttk.Frame(f)
+        tf, self.tree = ui.table(
+            f, self.COLS, stretch=("file",),
+            headings=dict(file="File", format="Format", check="Source check", result="Result"),
+            widths=dict(file=470, format=90, check=260, result=150),
+            tags={"fake": ui.BAD, "ok": ui.GOOD})
         tf.pack(fill="both", expand=True, pady=8)
-        self.tree = ttk.Treeview(tf, columns=self.COLS, show="headings", selectmode="extended")
-        for c, w, h in (("file", 470, "File"), ("format", 90, "Format"), ("check", 260, "Source check"),
-                        ("result", 140, "Result")):
-            self.tree.heading(c, text=h)
-            self.tree.column(c, width=w, anchor="w", stretch=c == "file")
-        sb = ttk.Scrollbar(tf, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=sb.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
-        self.tree.tag_configure("fake", foreground="#c0392b")
-        self.tree.tag_configure("ok", foreground="#1e8449")
 
         pending = []
         for i, (path, _, chk) in enumerate(items):
@@ -396,30 +488,32 @@ class ConvertDialog(tk.Toplevel):
             elif chk.genuine:
                 self.tree.selection_add(str(i))
 
-        opt = ttk.Frame(f)
+        opt = ctk.CTkFrame(f, fg_color="transparent")
         opt.pack(fill="x")
-        ttk.Label(opt, text="Encoding").grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(opt, text="Encoding").grid(row=0, column=0, sticky="w")
         self.enc = tk.StringVar(value=app.cfg.get("encoding", next(iter(converter.ENCODINGS))))
-        ttk.Combobox(opt, textvariable=self.enc, values=list(converter.ENCODINGS), state="readonly",
-                     width=30).grid(row=0, column=1, sticky="w", padx=6)
-        ttk.Label(opt, text="Originals").grid(row=0, column=2, sticky="w", padx=(18, 0))
+        ctk.CTkOptionMenu(opt, variable=self.enc, values=list(converter.ENCODINGS), width=270,
+                          dynamic_resizing=False).grid(row=0, column=1, sticky="w", padx=8)
+        ctk.CTkLabel(opt, text="Originals").grid(row=0, column=2, sticky="w", padx=(18, 6))
         self.orig = tk.StringVar(value=app.cfg.get("originals", "move"))
         for col, (val, label) in enumerate((("move", "Move to _lossless subfolder"),
                                             ("keep", "Keep next to MP3"), ("delete", "Delete")), start=3):
-            ttk.Radiobutton(opt, text=label, value=val, variable=self.orig).grid(row=0, column=col, sticky="w",
-                                                                                 padx=4)
-        ttk.Label(f, text="Tip: convert before importing into Rekordbox/Serato — replacing files later "
-                          "breaks their cue points and grids.", foreground="gray").pack(anchor="w", pady=(6, 0))
+            ctk.CTkRadioButton(opt, text=label, value=val, variable=self.orig).grid(row=0, column=col, sticky="w",
+                                                                                    padx=6)
+        ctk.CTkLabel(f, text="Tip: convert before importing into Rekordbox/Serato — replacing files later "
+                             "breaks their cue points and grids.", text_color=ui.MUTED,
+                     font=ui.font(12)).pack(anchor="w", pady=(8, 0))
 
-        bar = ttk.Frame(f)
+        bar = ctk.CTkFrame(f, fg_color="transparent")
         bar.pack(fill="x", pady=(8, 0))
-        self.prog = ttk.Label(bar, text="")
+        self.prog = ctk.CTkLabel(bar, text="")
         self.prog.pack(side="left")
-        self.go = ttk.Button(bar, text="Convert selected", command=self.start)
+        self.go = ctk.CTkButton(bar, text="Convert selected", command=self.start)
         self.go.pack(side="right")
-        ttk.Button(bar, text="Close", command=self.close).pack(side="right", padx=6)
+        ui.secondary(bar, "Close", self.close, width=90).pack(side="right", padx=6)
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.transient(app.root)
+        ui.reveal(self, center_on=app.root)
 
         if pending:
             threading.Thread(target=self._check_all, args=(pending,), daemon=True).start()
@@ -465,7 +559,7 @@ class ConvertDialog(tk.Toplevel):
         self.app.cfg.update(encoding=self.enc.get(), originals=self.orig.get())
         save_config(self.app.cfg)
         self.busy = True
-        self.go.state(["disabled"])
+        ui.set_enabled(self.go, False)
         threading.Thread(target=self._run, args=(sel, self.enc.get(), self.orig.get()), daemon=True).start()
 
     def _run(self, sel, enc, orig):
@@ -496,7 +590,7 @@ class ConvertDialog(tk.Toplevel):
                 res = f"✗ {e}"
             done[0] += 1
             self._ui(self._set_result, i, res)
-            self._ui(lambda: self.prog.config(text=f"{done[0]}/{len(sel)} done"))
+            self._ui(lambda: self.prog.configure(text=f"{done[0]}/{len(sel)} done"))
 
         with ThreadPoolExecutor(max_workers=max(1, min(4, (os.cpu_count() or 2) // 2))) as ex:
             list(ex.map(one, sel))
@@ -504,9 +598,9 @@ class ConvertDialog(tk.Toplevel):
 
     def _finished(self, ok, total):
         self.busy = False
-        self.go.state(["!disabled"])
-        self.prog.config(text=f"Converted {ok}/{total}.")
-        self.app.status.config(text=f"Converted {ok}/{total} file(s) to MP3.")
+        ui.set_enabled(self.go, True)
+        self.prog.configure(text=f"Converted {ok}/{total}.")
+        self.app.status.configure(text=f"Converted {ok}/{total} file(s) to MP3.")
 
     def close(self):
         if self.busy and not messagebox.askyesno(APP, "Conversion is still running. Close anyway?", parent=self):
@@ -520,11 +614,14 @@ class App:
     COLS = ("n", "artist", "title", "length", "match", "quality", "status")
 
     def __init__(self):
-        self.root = tk.Tk()
+        self.root = ctk.CTk()
+        ui.begin(self.root)                  # hidden + transparent until the user has logged in
+        ui.init(self.root)
         self.root.title(f"{APP} {__version__}")
+        self._icon = None
         self._set_window_icon()
-        self.root.geometry("1150x680")
-        self.root.minsize(900, 500)
+        self.root.geometry("1220x760")
+        self.root.minsize(980, 560)
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
         self.cfg = load_config()
         self.events: queue.Queue = queue.Queue()
@@ -535,6 +632,7 @@ class App:
         self.current_review: ReviewDialog | None = None
         self.running = False
         self.login_dlg: LoginDialog | None = None
+        self.soundcloud_only = False         # "Use SoundCloud only": no Soulseek, streams/official downloads
         self.sc_token: str | None = None
         if keyring:
             try:
@@ -556,8 +654,9 @@ class App:
         self.preset = tk.StringVar(value=self.cfg.get("preset", next(iter(matcher.QUALITY_PRESETS))))
         if self.preset.get() not in matcher.QUALITY_PRESETS:
             self.preset.set(next(iter(matcher.QUALITY_PRESETS)))
-        self.threshold = tk.IntVar(value=self.cfg.get("threshold", 80))
-        self.parallel = tk.IntVar(value=self.cfg.get("parallel", 3))
+        # option menus work with strings; converted with int() where used
+        self.threshold = tk.StringVar(value=str(self.cfg.get("threshold", 80)))
+        self.parallel = tk.StringVar(value=str(self.cfg.get("parallel", 3)))
         self.always_ask = tk.BooleanVar(value=self.cfg.get("always_ask", False))
         self.rename = tk.BooleanVar(value=self.cfg.get("rename", True))
         self.skip_existing = tk.BooleanVar(value=self.cfg.get("skip_existing", True))
@@ -577,91 +676,92 @@ class App:
 
     # ------------------------------------------------------------------ layout
     def _build(self):
-        pad = dict(padx=10, pady=4)
-        top = ttk.Frame(self.root, padding=(10, 10, 10, 0))
-        top.pack(fill="x")
-        ttk.Label(top, text="Playlist link").pack(side="left")
-        e = ttk.Entry(top, textvariable=self.url)
-        e.pack(side="left", fill="x", expand=True, padx=6)
+        root = self.root
+        top = ctk.CTkFrame(root, fg_color="transparent")
+        top.pack(fill="x", padx=16, pady=(16, 8))
+        ctk.CTkLabel(top, text="Playlist link", font=ui.font(13, True)).pack(side="left")
+        e = ctk.CTkEntry(top, textvariable=self.url, height=34)
+        e.pack(side="left", fill="x", expand=True, padx=10)
         e.bind("<Return>", lambda ev: self.load())
-        self.load_btn = ttk.Button(top, text="Load playlist", command=self.load)
+        self.load_btn = ctk.CTkButton(top, text="Load playlist", command=self.load, height=34, width=130)
         self.load_btn.pack(side="left")
 
-        opts = ttk.Frame(self.root)
-        opts.pack(fill="x", **pad)
-        ttk.Label(opts, text="Quality").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(opts, textvariable=self.preset, values=list(matcher.QUALITY_PRESETS), state="readonly",
-                     width=30).grid(row=0, column=1, sticky="w", padx=(4, 16))
-        ttk.Label(opts, text="Auto-download if match ≥").grid(row=0, column=2, sticky="w")
-        ttk.Spinbox(opts, from_=30, to=100, increment=5, textvariable=self.threshold, width=5).grid(
-            row=0, column=3, sticky="w", padx=(4, 0))
-        ttk.Label(opts, text="%").grid(row=0, column=4, sticky="w", padx=(2, 16))
-        ttk.Label(opts, text="Parallel downloads").grid(row=0, column=5, sticky="w")
-        ttk.Spinbox(opts, from_=1, to=8, textvariable=self.parallel, width=4).grid(row=0, column=6, sticky="w",
-                                                                                  padx=4)
+        card = ctk.CTkFrame(root)
+        card.pack(fill="x", padx=16, pady=6)
+        opts = ctk.CTkFrame(card, fg_color="transparent")
+        opts.pack(fill="x", padx=14, pady=12)
+        gx = dict(sticky="w", padx=(0, 10))
+        ctk.CTkLabel(opts, text="Quality").grid(row=0, column=0, **gx)
+        self.preset_box = ctk.CTkOptionMenu(opts, variable=self.preset, values=list(matcher.QUALITY_PRESETS),
+                                            width=380, dynamic_resizing=False)
+        self.preset_box.grid(row=0, column=1, columnspan=2, **gx)
+        ctk.CTkLabel(opts, text="Auto-download if match ≥").grid(row=0, column=3, **gx)
+        self.threshold_box = ctk.CTkOptionMenu(opts, variable=self.threshold, width=86,
+                                               values=[f"{n}" for n in range(30, 101, 5)])
+        self.threshold_box.grid(row=0, column=4, sticky="w")
+        ctk.CTkLabel(opts, text="%").grid(row=0, column=5, sticky="w", padx=(4, 18))
+        ctk.CTkLabel(opts, text="Parallel downloads").grid(row=0, column=6, **gx)
+        ctk.CTkOptionMenu(opts, variable=self.parallel, width=70, values=[str(n) for n in range(1, 9)]).grid(
+            row=0, column=7, sticky="w")
 
-        ttk.Checkbutton(opts, text="Ask before every download", variable=self.always_ask).grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Checkbutton(opts, text="Rename to “Artist - Title”", variable=self.rename).grid(
-            row=1, column=2, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Checkbutton(opts, text="Skip tracks already in folder", variable=self.skip_existing).grid(
-            row=1, column=5, columnspan=2, sticky="w", pady=(6, 0))
+        cy = dict(sticky="w", pady=(10, 0), padx=(0, 16))
+        self.ask_cb = ctk.CTkCheckBox(opts, text="Ask before every download", variable=self.always_ask)
+        self.ask_cb.grid(row=1, column=0, columnspan=3, **cy)
+        ctk.CTkCheckBox(opts, text="Rename to “Artist - Title”", variable=self.rename).grid(
+            row=1, column=3, columnspan=3, **cy)
+        ctk.CTkCheckBox(opts, text="Skip tracks already in folder", variable=self.skip_existing).grid(
+            row=1, column=6, columnspan=2, **cy)
+        self.fake_cb = ctk.CTkCheckBox(opts, text="Reject fake lossless (upscaled MP3s), try another source",
+                                       variable=self.reject_fake)
+        self.fake_cb.grid(row=2, column=0, columnspan=3, **cy)
+        ctk.CTkCheckBox(opts, text="Number files in playlist order (01 - …)", variable=self.number).grid(
+            row=2, column=3, columnspan=3, **cy)
+        ctk.CTkCheckBox(opts, text="Add missing cover art", variable=self.add_art).grid(
+            row=2, column=6, columnspan=2, **cy)
 
-        ttk.Checkbutton(opts, text="Reject fake lossless (upscaled MP3s) and try another source",
-                        variable=self.reject_fake).grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
-        ttk.Checkbutton(opts, text="Add missing cover art", variable=self.add_art).grid(
-            row=2, column=5, columnspan=2, sticky="w", pady=(4, 0))
-        ttk.Checkbutton(opts, text="Number files in playlist order (01 - …)", variable=self.number).grid(
-            row=3, column=0, columnspan=4, sticky="w", pady=(4, 0))
-        ttk.Label(opts, text="SoundCloud tracks").grid(row=4, column=0, sticky="w", pady=(8, 0))
-        ttk.Combobox(opts, textvariable=self.sc_mode, values=SC_MODES, state="readonly", width=38).grid(
-            row=4, column=1, columnspan=2, sticky="w", padx=(4, 16), pady=(8, 0))
-        self.sc_btn = ttk.Button(opts, text="SoundCloud login…", command=self.sc_login)
-        self.sc_btn.grid(row=4, column=3, columnspan=2, sticky="w", pady=(8, 0))
-        self.sc_label = ttk.Label(opts, text="", foreground="gray")
-        self.sc_label.grid(row=4, column=5, columnspan=2, sticky="w", pady=(8, 0))
+        ctk.CTkLabel(opts, text="SoundCloud").grid(row=3, column=0, sticky="w", pady=(14, 0), padx=(0, 10))
+        self.sc_mode_box = ctk.CTkOptionMenu(opts, variable=self.sc_mode, values=SC_MODES, width=380,
+                                             dynamic_resizing=False)
+        self.sc_mode_box.grid(row=3, column=1, columnspan=2, sticky="w", pady=(14, 0), padx=(0, 10))
+        self.sc_btn = ui.secondary(opts, "Connect SoundCloud…", self.sc_login, width=170)
+        self.sc_btn.grid(row=3, column=3, columnspan=2, sticky="w", pady=(14, 0))
+        self.sc_label = ctk.CTkLabel(opts, text="", text_color=ui.MUTED)
+        self.sc_label.grid(row=3, column=5, columnspan=3, sticky="w", pady=(14, 0), padx=(10, 0))
         self._sc_status()
 
-        of = ttk.Frame(self.root)
-        of.pack(fill="x", **pad)
-        ttk.Label(of, text="Save to").pack(side="left")
-        ttk.Entry(of, textvariable=self.out_dir).pack(side="left", fill="x", expand=True, padx=6)
-        ttk.Button(of, text="Browse…", command=self.browse).pack(side="left")
+        of = ctk.CTkFrame(root, fg_color="transparent")
+        of.pack(fill="x", padx=16, pady=8)
+        ctk.CTkLabel(of, text="Save to", font=ui.font(13, True)).pack(side="left")
+        ctk.CTkEntry(of, textvariable=self.out_dir).pack(side="left", fill="x", expand=True, padx=10)
+        ui.secondary(of, "Browse…", self.browse, width=100).pack(side="left")
 
-        tf = ttk.Frame(self.root)
-        tf.pack(fill="both", expand=True, padx=10, pady=(6, 0))
-        self.tree = ttk.Treeview(tf, columns=self.COLS, show="headings", selectmode="extended")
-        heads = dict(n="#", artist="Artist", title="Title", length="Length", match="Match", quality="Quality",
-                     status="Status")
-        widths = dict(n=40, artist=200, title=300, length=60, match=60, quality=85, status=320)
-        for c in self.COLS:
-            self.tree.heading(c, text=heads[c])
-            self.tree.column(c, width=widths[c], anchor="w", stretch=c in ("title", "status"))
-        sb = ttk.Scrollbar(tf, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=sb.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
-        for tag, col in dict(done="#1e8449", fail="#c0392b", ask="#b9770e", skip="gray", dl="#2471a3").items():
-            self.tree.tag_configure(tag, foreground=col)
+        tf, self.tree = ui.table(
+            root, self.COLS, stretch=("title", "status"),
+            headings=dict(n="#", artist="Artist", title="Title", length="Length", match="Match",
+                          quality="Quality", status="Status"),
+            widths=dict(n=44, artist=200, title=300, length=64, match=64, quality=100, status=340),
+            tags={"done": ui.GOOD, "fail": ui.BAD, "ask": ui.WARN, "skip": ui.MUTED, "dl": ui.INFO})
+        tf.pack(fill="both", expand=True, padx=16, pady=(4, 0))
         self.tree.bind("<Double-1>", self.show_attempts)
         for seq in ("<Button-2>", "<Button-3>", "<Control-Button-1>"):   # right-click on macOS + others
             self.tree.bind(seq, self.row_menu)
         self.waiting_rows: set[int] = set()    # tracks currently waiting in an uploader's queue
 
-        bot = ttk.Frame(self.root, padding=10)
-        bot.pack(fill="x")
-        self.start_btn = ttk.Button(bot, text="▶ Find & download all", command=self.start_all)
+        bot = ctk.CTkFrame(root, fg_color="transparent")
+        bot.pack(fill="x", padx=16, pady=14)
+        self.start_btn = ctk.CTkButton(bot, text="▶  Find & download all", command=self.start_all, width=180)
         self.start_btn.pack(side="left")
-        self.sel_btn = ttk.Button(bot, text="Download selected", command=self.start_selected)
-        self.sel_btn.pack(side="left", padx=6)
-        self.stop_btn = ttk.Button(bot, text="■ Stop", command=self.stop)
+        self.sel_btn = ctk.CTkButton(bot, text="Download selected", command=self.start_selected, width=150)
+        self.sel_btn.pack(side="left", padx=8)
+        self.stop_btn = ctk.CTkButton(bot, text="■  Stop", command=self.stop, width=90,
+                                      fg_color=ui.STOP, hover_color=ui.STOP_HOVER)
         self.stop_btn.pack(side="left")
-        self.skip_btn = ttk.Button(bot, text="⏭ Skip selected", command=self.skip_selected)
-        self.skip_btn.pack(side="left", padx=6)
-        ttk.Button(bot, text="Open folder", command=self.open_folder).pack(side="left", padx=6)
-        ttk.Button(bot, text="Convert to MP3…", command=self.convert_folder).pack(side="left")
-        self.status = ttk.Label(bot, text="Not logged in", foreground="gray")
-        self.status.pack(side="right")
+        self.skip_btn = ui.secondary(bot, "⏭  Skip selected", self.skip_selected, width=130)
+        self.skip_btn.pack(side="left", padx=8)
+        ui.secondary(bot, "Open folder", self.open_folder, width=110).pack(side="left")
+        ui.secondary(bot, "Convert to MP3…", self.convert_folder, width=140).pack(side="left", padx=8)
+        self.status = ctk.CTkLabel(bot, text="Not logged in", text_color=ui.MUTED, anchor="e")
+        self.status.pack(side="right", fill="x", expand=True)
         self._set_running(False)
 
     # ------------------------------------------------------------------ actions
@@ -681,6 +781,10 @@ class App:
 
     def _build_menu(self):
         menubar = tk.Menu(self.root)
+        account = tk.Menu(menubar, tearoff=False)
+        account.add_command(label="Log in to Soulseek…", command=self.soulseek_login_later)
+        account.add_command(label="Connect SoundCloud…", command=self.sc_login)
+        menubar.add_cascade(label="Account", menu=account)
         help_menu = tk.Menu(menubar, tearoff=False)
         help_menu.add_command(label="Check for Updates…", command=self.check_for_updates)
         help_menu.add_command(label="Open Log File", command=lambda: open_path(LOG_FILE)
@@ -691,12 +795,12 @@ class App:
         self.root.configure(menu=menubar)
 
     def check_for_updates(self):
-        self.status.config(text="Checking for updates…")
+        self.status.configure(text="Checking for updates…")
         updater.check_in_background(self.root, lambda r: self.on_update_result(r, manual=True))
 
     def on_update_result(self, release, manual: bool):
         if manual:
-            self.status.config(text="")
+            self.status.configure(text="")
         if release and updater.is_newer(release["version"]) and (
                 manual or release["version"] != self.cfg.get("skipped_version")):
             if self.login_dlg and not manual:
@@ -715,6 +819,11 @@ class App:
     def skip_version(self, version: str):
         self.cfg["skipped_version"] = version
         save_config(self.cfg)
+
+    def show_main(self):
+        """Reveal the main window (hidden while the first login window is up)."""
+        if self.root.state() == "withdrawn":
+            ui.reveal(self.root)
 
     def _show_login(self):
         self.login_dlg = LoginDialog(self)
@@ -738,8 +847,8 @@ class App:
         if not url:
             return
         self.cfg["last_url"] = url
-        self.load_btn.state(["disabled"])
-        self.status.config(text="Reading playlist…")
+        ui.set_enabled(self.load_btn, False)
+        self.status.configure(text="Reading playlist…")
 
         def work():
             try:
@@ -753,8 +862,8 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _options(self) -> JobOptions:
-        self.cfg.update(out_dir=self.out_dir.get(), preset=self.preset.get(), threshold=self.threshold.get(),
-                        parallel=self.parallel.get(), always_ask=self.always_ask.get(), rename=self.rename.get(),
+        self.cfg.update(out_dir=self.out_dir.get(), preset=self.preset.get(), threshold=int(self.threshold.get()),
+                        parallel=int(self.parallel.get()), always_ask=self.always_ask.get(), rename=self.rename.get(),
                         skip_existing=self.skip_existing.get(), reject_fake=self.reject_fake.get(),
                         number=self.number.get(), add_art=self.add_art.get(), sc_mode=self.sc_mode.get())
         save_config(self.cfg)
@@ -763,7 +872,8 @@ class App:
                           rename=self.rename.get(), skip_existing=self.skip_existing.get(),
                           parallel=max(1, int(self.parallel.get())), reject_fake=self.reject_fake.get(),
                           number=self.number.get(), add_art=self.add_art.get(),
-                          sc_mode=self.sc_mode.get(), sc_token=self.sc_token)
+                          sc_mode=SC_MODES[2] if self.soundcloud_only else self.sc_mode.get(),
+                          sc_token=self.sc_token)
 
     def start_all(self):
         if self.playlist:
@@ -778,12 +888,17 @@ class App:
             todo = sorted(i for i in sel if "done" not in self.tree.item(str(i), "tags"))
             if todo:
                 self.engine.add_to_job(todo)
-                self.status.config(text=f"Added {len(todo)} track(s) to the running job.")
+                self.status.configure(text=f"Added {len(todo)} track(s) to the running job.")
             return
         self._start(sorted(sel))
 
     def _start(self, indices):
-        if not self.engine.client:
+        if self.soundcloud_only:
+            if self.playlist and self.playlist.source != "SoundCloud":
+                messagebox.showwarning(APP, "SoundCloud-only mode can only download SoundCloud playlists.\n\n"
+                                            "Spotify and YouTube tracks need Soulseek: Account → Log in to Soulseek…")
+                return
+        elif not self.engine.client:
             messagebox.showwarning(APP, "Log in to Soulseek first.")
             return
         for i in indices:
@@ -804,10 +919,10 @@ class App:
     def _set_running(self, running: bool):
         self.running = running
         has_pl = self.playlist is not None
-        self.start_btn.state(["disabled"] if running or not has_pl else ["!disabled"])
-        self.sel_btn.state(["!disabled"] if has_pl else ["disabled"])   # mid-job it adds to the job
-        self.stop_btn.state(["!disabled"] if running else ["disabled"])
-        self.skip_btn.state(["!disabled"] if running else ["disabled"])
+        ui.set_enabled(self.start_btn, not (running or not has_pl))
+        ui.set_enabled(self.sel_btn, has_pl)   # mid-job it adds to the job
+        ui.set_enabled(self.stop_btn, running)
+        ui.set_enabled(self.skip_btn, running)
 
     def quit(self):
         self.cfg.update(out_dir=self.out_dir.get())
@@ -837,15 +952,41 @@ class App:
     # ------------------------------------------------------------------ SoundCloud login
     def _sc_status(self):
         if self.sc_token:
-            self.sc_label.config(text=self.cfg.get("sc_user_label", "● SoundCloud token saved"),
-                                 foreground="#1e8449")
-            self.sc_btn.config(text="SoundCloud account…")
+            self.sc_label.configure(text=self.cfg.get("sc_user_label", "● SoundCloud token saved"),
+                                 text_color=ui.GOOD)
+            self.sc_btn.configure(text="SoundCloud account…")
         else:
-            self.sc_label.config(text="Not logged in (official downloads unavailable)", foreground="gray")
-            self.sc_btn.config(text="SoundCloud login…")
+            self.sc_label.configure(text="Not logged in (official downloads unavailable)", text_color=ui.MUTED)
+            self.sc_btn.configure(text="Connect SoundCloud…")
 
     def sc_login(self):
         SoundCloudLoginDialog(self)
+
+    SC_ONLY_QUALITY = "SoundCloud stream / official download"
+
+    def set_soundcloud_only(self, on: bool):
+        """SoundCloud-only mode: no Soulseek, so the Soulseek quality/matching options don't apply."""
+        self.soundcloud_only = on
+        if on:
+            self._saved_sc_mode = self.sc_mode.get()
+            # keep references: Tk forgets a variable's value once Python drops the object
+            self._sc_only_vars = (tk.StringVar(value=self.SC_ONLY_QUALITY), tk.StringVar(value=SC_MODES[2]))
+            self.preset_box.configure(variable=self._sc_only_vars[0])
+            self.sc_mode_box.configure(variable=self._sc_only_vars[1])
+        else:
+            self.preset_box.configure(variable=self.preset)
+            self.sc_mode_box.configure(variable=self.sc_mode)
+        self.root.title(f"{APP} {__version__}" + (" — SoundCloud only" if on else ""))
+        for w in (self.preset_box, self.threshold_box, self.ask_cb, self.fake_cb, self.sc_mode_box):
+            ui.set_enabled(w, not on)
+        if on:
+            self.status.configure(text="● SoundCloud-only mode — Soulseek is off (Account → Log in to Soulseek…)",
+                               text_color=ui.ORANGE)
+        self._build_menu()
+
+    def soulseek_login_later(self):
+        if not self.login_dlg:
+            self.login_dlg = LoginDialog(self, relogin=True)
 
     def _note_go_plus(self, seen: bool):
         """Go+ evidence: premium formats offered to our login, or a 256k stream downloaded."""
@@ -931,10 +1072,10 @@ class App:
     def _handle(self, kind, d):
         if kind == "connection":
             if d["state"] == "up":
-                self.status.config(text=f"● Logged in as {d.get('username', '')} (reconnected)", foreground="#1e8449")
+                self.status.configure(text=f"● Logged in as {d.get('username', '')} (reconnected)", text_color=ui.GOOD)
             elif d["kicked"]:
-                self.status.config(text="● Soulseek: disconnected — account logged in elsewhere",
-                                   foreground="#c0392b")
+                self.status.configure(text="● Soulseek: disconnected — account logged in elsewhere",
+                                   text_color=ui.BAD)
                 if not self.login_dlg and messagebox.askyesno(APP, (
                         "Soulseek closed the connection.\n\nThis almost always means the same username "
                         "logged in somewhere else — e.g. Nicotine+ running with your account. Soulseek only "
@@ -942,8 +1083,8 @@ class App:
                         "Tip: give Soulrip its own Soulseek username.\n\nLog in again now?")):
                     self.login_dlg = LoginDialog(self, relogin=True)
             else:
-                self.status.config(text="● Soulseek disconnected — reconnecting… (downloads paused)",
-                                   foreground="#b9770e")
+                self.status.configure(text="● Soulseek disconnected — reconnecting… (downloads paused)",
+                                   text_color=ui.WARN)
         elif kind == "call":
             try:
                 d["fn"](*d["args"])
@@ -954,29 +1095,35 @@ class App:
                 self.login_dlg.grab_release()
                 self.login_dlg.destroy()
                 self.login_dlg = None
+            self.show_main()
+            if self.soundcloud_only:
+                self.set_soundcloud_only(False)
             if self._pending_update:             # update found while the login window had focus
                 release, self._pending_update = self._pending_update, None
                 self.root.after(300, lambda: self._show_update(release))
-            self.status.config(text=f"● Logged in as {d['username']}", foreground="#1e8449")
+            self.status.configure(text=f"● Logged in as {d['username']}", text_color=ui.GOOD)
         elif kind == "login_failed":
             if self.login_dlg:
                 self.login_dlg.failed(d["msg"])
         elif kind == "info":
-            self.status.config(text=d["msg"])
+            self.status.configure(text=d["msg"])
         elif kind == "playlist":
             self.playlist = d["pl"]
-            self.load_btn.state(["!disabled"])
+            ui.set_enabled(self.load_btn, True)
             self._fill(self.playlist)
             self._note_go_plus(any(t.sc_hq for t in self.playlist.tracks))
-            self.status.config(text=f"{self.playlist.source}: “{self.playlist.name}” — "
+            if self.soundcloud_only and self.playlist.source != "SoundCloud":
+                messagebox.showinfo(APP, f"This is a {self.playlist.source} playlist. SoundCloud-only mode can only "
+                                         "download SoundCloud playlists — log in to Soulseek (Account menu) for this one.")
+            self.status.configure(text=f"{self.playlist.source}: “{self.playlist.name}” — "
                                     f"{len(self.playlist.tracks)} tracks")
             if self.playlist.source == "Spotify" and len(self.playlist.tracks) == 100:
                 messagebox.showinfo(APP, "Spotify only shares the first 100 tracks of a playlist publicly. "
                                          "Split bigger playlists into chunks of 100.")
             self._set_running(self.running)
         elif kind == "playlist_err":
-            self.load_btn.state(["!disabled"])
-            self.status.config(text="")
+            ui.set_enabled(self.load_btn, True)
+            self.status.configure(text="")
             messagebox.showerror(APP, d["msg"])
         elif kind == "status":
             (self.waiting_rows.add if d.get("waiting") else self.waiting_rows.discard)(d["idx"])
@@ -997,9 +1144,9 @@ class App:
         elif kind == "job_done":
             self._set_running(False)
             if d["cancelled"]:
-                self.status.config(text="Stopped.")
+                self.status.configure(text="Stopped.")
             elif d.get("error"):
-                self.status.config(text=f"Job stopped by an error — {d['error'][:80]}", foreground="#c0392b")
+                self.status.configure(text=f"Job stopped by an error — {d['error'][:80]}", text_color=ui.BAD)
                 messagebox.showerror(APP, f"The job stopped because of an error:\n\n{d['error']}\n\n"
                                           f"Tracks that finished are saved. Full details are in:\n{LOG_FILE}\n\n"
                                           "Run the playlist again to pick up the remaining tracks.")
@@ -1007,7 +1154,7 @@ class App:
                 msg = f"Done — {d['ok']} downloaded, {d['missing']} missing/skipped."
                 if d["missing"]:
                     msg += "  (list saved to _missing.txt)"
-                self.status.config(text=msg)
+                self.status.configure(text=msg)
                 lossless = [x for x in self.downloaded if converter.is_lossless(x[0])]
                 if lossless and self.preset.get() in matcher.CONVERT_PRESETS:
                     ConvertDialog(self, lossless)
@@ -1046,7 +1193,7 @@ class App:
         if rows:
             self.engine.extend_timeout(rows, seconds)
             what = "no limit" if seconds == float("inf") else f"+{int(seconds // 60)} min"
-            self.status.config(text=f"Queue timeout extended ({what}) for {len(rows)} track(s).")
+            self.status.configure(text=f"Queue timeout extended ({what}) for {len(rows)} track(s).")
 
     # ------------------------------------------------------------------ details
     def show_attempts(self, event):
@@ -1056,14 +1203,15 @@ class App:
         idx = int(iid)
         track = self.playlist.tracks[idx]
         lines = self.attempts.get(idx) or ["No download attempts yet for this track."]
-        win = tk.Toplevel(self.root)
-        win.title(f"Attempts — {track.display}")
-        win.geometry("900x320")
-        txt = tk.Text(win, wrap="word", padx=10, pady=10, font=("Menlo", 12))
+        win = ui.window(self.root, f"Attempts — {track.display}", self._icon)
+        win.geometry("940x360")
+        mono = ctk.CTkFont(family="Menlo" if sys.platform == "darwin" else "Consolas", size=13)
+        txt = ctk.CTkTextbox(win, wrap="word", font=mono)
         txt.insert("end", f"{track.display}\n\n" + "\n".join(f"{n}. {l}" for n, l in enumerate(lines, 1))
                    + f"\n\nFull log: {LOG_FILE}")
-        txt.config(state="disabled")
-        txt.pack(fill="both", expand=True)
+        txt.configure(state="disabled")
+        txt.pack(fill="both", expand=True, padx=12, pady=12)
+        ui.reveal(win, center_on=self.root)
 
     # ------------------------------------------------------------------ conversion
     def convert_folder(self):
@@ -1124,6 +1272,9 @@ def self_test(report_path: str):
         import rapidfuzz  # noqa: F401
         import yt_dlp
         results["yt_dlp"] = yt_dlp.version.__version__
+        import sqlite3  # noqa: F401 — needed to read Firefox/Chrome cookies ("Log in with your browser")
+        from yt_dlp.cookies import extract_cookies_from_browser  # noqa: F401
+        results["browser_login"] = True
         import keyring
         results["keyring_backend"] = type(keyring.get_keyring()).__name__
         import titleparse
@@ -1138,9 +1289,11 @@ def self_test(report_path: str):
         except Exception as e:
             results["soundcloud_client_id"] = f"unreachable: {e}"
         results["ffmpeg"] = converter.ffmpeg_path()      # optional: users install it themselves
-        root = tk.Tk()
+        root = ctk.CTk()
         root.withdraw()
+        ctk.CTkButton(root, text="x")          # needs CustomTkinter's bundled theme files
         results["tk"] = True
+        results["customtkinter"] = ctk.__version__
         root.destroy()
         results["ok"] = (results["parse"] == "Soulja Boy / The Vampire Gang" and bool(net.CA_FILE)
                          and results["https_github"]

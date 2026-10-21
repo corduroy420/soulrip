@@ -8,8 +8,10 @@ import threading
 import tkinter as tk
 import urllib.request
 import webbrowser
-from tkinter import ttk
 
+import customtkinter as ctk
+
+import ui
 from net import SSL_CONTEXT
 from version import __version__
 
@@ -79,39 +81,44 @@ def check_in_background(root: tk.Misc, callback):
     root.after(200, poll)
 
 
-class UpdateDialog(tk.Toplevel):
+class UpdateDialog(ctk.CTkToplevel):
     """'Version X is available' with Download / Remind me later / Skip this version."""
 
     def __init__(self, master, release: dict, on_skip):
         super().__init__(master)
+        ui.begin(self)
         self.title("Update available")
         self.resizable(False, False)
         self.transient(master)
         self.release = release
         self.on_skip = on_skip
 
-        body = ttk.Frame(self, padding=16)
-        body.pack(fill="both", expand=True)
-        ttk.Label(body, text=f"Soulrip {release['version']} is available",
-                  font=("TkDefaultFont", 14, "bold")).pack(anchor="w")
-        ttk.Label(body, text=f"You have version {__version__}.").pack(anchor="w", pady=(2, 10))
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=22, pady=20)
+        ctk.CTkLabel(body, text=f"Soulrip {release['version']} is available",
+                     font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(body, text=f"You have version {__version__}.", text_color=("gray40", "gray62")).pack(
+            anchor="w", pady=(2, 10))
         if release["notes"]:
-            ttk.Label(body, text="What's new:", font=("TkDefaultFont", 11, "bold")).pack(anchor="w")
-            notes = tk.Text(body, width=60, height=min(12, release["notes"].count("\n") + 2), wrap="word",
-                            relief="flat", highlightthickness=0, borderwidth=0)
+            ctk.CTkLabel(body, text="What's new:", font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w")
+            notes = ctk.CTkTextbox(body, width=520, height=min(240, 22 * (release["notes"].count("\n") + 2)),
+                                   wrap="word")
             notes.insert("1.0", release["notes"])
             notes.configure(state="disabled")
-            notes.pack(fill="x", pady=(2, 10))
+            notes.pack(fill="x", pady=(4, 10))
         hint = ("Download the new version, then replace the old app with it."
                 if release["download"] else "The download page will open in your browser.")
-        ttk.Label(body, text=hint, foreground="#777777").pack(anchor="w")
+        ctk.CTkLabel(body, text=hint, text_color=("gray40", "gray62")).pack(anchor="w")
 
-        buttons = ttk.Frame(body)
+        buttons = ctk.CTkFrame(body, fg_color="transparent")
         buttons.pack(fill="x", pady=(14, 0))
-        ttk.Button(buttons, text="Skip this version", command=self.skip).pack(side="left")
-        ttk.Button(buttons, text="Download", command=self.download).pack(side="right")
-        ttk.Button(buttons, text="Remind me later", command=self.destroy).pack(side="right", padx=6)
+        ctk.CTkButton(buttons, text="Skip this version", command=self.skip, fg_color="transparent", border_width=1,
+                      text_color=("gray10", "#DCE4EE"), width=140).pack(side="left")
+        ctk.CTkButton(buttons, text="Download", command=self.download, width=110).pack(side="right")
+        ctk.CTkButton(buttons, text="Remind me later", command=self.destroy, fg_color="transparent",
+                      border_width=1, text_color=("gray10", "#DCE4EE"), width=140).pack(side="right", padx=8)
         self.bind("<Escape>", lambda e: self.destroy())
+        ui.reveal(self, center_on=master)
 
     def download(self):
         webbrowser.open(self.release["download"] or self.release["page"])

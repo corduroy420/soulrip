@@ -117,8 +117,14 @@ Downloads *start* in playlist order, but they finish in whatever order the peers
 
 ## SoundCloud playlists (`sc_direct.py`)
 
-Log in with **SoundCloud login…**. SoundCloud doesn't allow third-party password logins, so you paste the
-`oauth_token` cookie from your browser; the dialog explains where to find it. The token is stored in the macOS Keychain.
+Click **Connect SoundCloud…**, pick your browser (Chrome, Brave, Edge, Firefox, Safari, Opera, Vivaldi), click
+**Open SoundCloud to log in**, log in there, then click **I'm logged in — connect**. Soulrip reads SoundCloud's
+`oauth_token` login cookie from that browser and stores it in your system keychain. SoundCloud doesn't
+allow third-party password logins, so this is the only way in. Some notes:
+- On a Mac, Chromium-based browsers ask whether Soulrip may use their "Safe Storage" key. Click **Allow**.
+- Safari needs Full Disk Access for Soulrip.
+- On Windows, Chrome, Edge and Brave lock their cookies away from other apps, so use **Firefox** there,
+  or paste the token by hand (the dialog explains how).
 
 Each track's status column shows what SoundCloud offers for it: `official download`, `stream 160k`,
 `DRM: Soulseek only`, `free DL link`.
@@ -128,6 +134,10 @@ Each track's status column shows what SoundCloud offers for it: `official downlo
 | Official download → Soulseek → stream fallback (default) | the artist's original file, then Soulseek, then the stream |
 | Official download → Soulseek (never streams) | same, but never saves a stream |
 | SoundCloud only | official download, else the stream (no Soulseek) |
+
+**No Soulseek account, or a network that blocks it?** Click **Use SoundCloud only** in the login window.
+Soulrip then skips Soulseek entirely and rips SoundCloud playlists straight from SoundCloud. The Soulseek
+quality and matching options are greyed out. Switch back any time with **Account → Log in to Soulseek…**.
 
 - **Messy titles are parsed** (`titleparse.py`). Track numbers like `10 - …` are dropped. Version tags like
   `rq rmx` become `(ali rq remix)`, using the uploader's name. `Title - Artist` order is detected, and an iTunes lookup

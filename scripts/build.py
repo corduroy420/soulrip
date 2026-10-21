@@ -61,6 +61,8 @@ def main():
             "--copy-metadata", "keyring", "--collect-submodules", "keyring.backends",
             "--collect-submodules", "aioslsk", "--collect-all", "async_upnp_client",
             "--copy-metadata", "aioslsk", "--copy-metadata", "yt-dlp",
+            # CustomTkinter's theme .json files and fonts are data files, not imports
+            "--collect-data", "customtkinter", "--collect-submodules", "darkdetect",
             "app.py"]
     if system == "Darwin":
         args += ["--icon", "build_assets/icon.icns", "--osx-bundle-identifier", BUNDLE_ID]

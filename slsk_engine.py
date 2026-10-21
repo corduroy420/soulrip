@@ -415,6 +415,12 @@ class Engine:
                                 self.post("status", idx=idx, status="✓ Already in folder", state="done", file=have)
                                 results[idx] = "done"
                                 continue
+                        if not track.sc_id and self.client is None:
+                            # SoundCloud-only mode: nothing to fetch this from without Soulseek
+                            self.post("status", idx=idx, status="✗ Needs Soulseek (not a SoundCloud track)",
+                                      state="fail")
+                            results[idx] = "fail"
+                            continue
                         if track.sc_id and not upgrading and (opts.sc_mode == SC_ONLY or
                                                               (track.sc_official and opts.sc_token)):
                             tasks.append(self._track_task(
@@ -688,7 +694,9 @@ class Engine:
         if opts.add_art:
             self.post("status", idx=idx, status="Adding cover art…")
             art = " · " + await self.loop.run_in_executor(None, artwork.add_missing_art, final, track)
-        lowq = " (low quality — rerun later to upgrade)" if kind == "stream" else ""
+        lowq = ""
+        if kind == "stream":   # reruns only upgrade streams when Soulseek is in use
+            lowq = " (low quality)" if opts.sc_mode == SC_ONLY else " (low quality — rerun later to upgrade)"
         self.post("status", idx=idx, status=f"✓ {label}{art}{lowq}", state="done",
                   file=os.path.basename(final), quality=label.replace("SC ", "SC "))
         self.post("downloaded", idx=idx, path=final, track=track, check=None)

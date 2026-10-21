@@ -160,3 +160,111 @@ def move_to_trash(path: str) -> None:
         target = os.path.join(trash, f"{base} {n}{ext}")
         n += 1
     shutil.move(path, target)
+
+
+# --------------------------------------------------------------------------- log in via the browser
+
+SIGNIN_URL = "https://soundcloud.com/signin"
+
+# (label, yt-dlp name, macOS app name, Windows executable, profile folder relative to a base dir)
+_MAC = os.path.expanduser("~/Library/Application Support")
+_WIN_LOCAL = os.environ.get("LOCALAPPDATA", "")
+_WIN_ROAMING = os.environ.get("APPDATA", "")
+BROWSERS = [
+    ("Google Chrome", "chrome", "Google Chrome", "chrome",
+     {"darwin": (_MAC, "Google/Chrome"), "win32": (_WIN_LOCAL, r"Google\Chrome\User Data")}),
+    ("Brave", "brave", "Brave Browser", "brave",
+     {"darwin": (_MAC, "BraveSoftware/Brave-Browser"), "win32": (_WIN_LOCAL, r"BraveSoftware\Brave-Browser\User Data")}),
+    ("Microsoft Edge", "edge", "Microsoft Edge", "msedge",
+     {"darwin": (_MAC, "Microsoft Edge"), "win32": (_WIN_LOCAL, r"Microsoft\Edge\User Data")}),
+    ("Firefox", "firefox", "Firefox", "firefox",
+     {"darwin": (_MAC, "Firefox"), "win32": (_WIN_ROAMING, r"Mozilla\Firefox")}),
+    ("Safari", "safari", "Safari", "", {"darwin": ("/Applications", "Safari.app")}),
+    ("Opera", "opera", "Opera", "opera",
+     {"darwin": (_MAC, "com.operasoftware.Opera"), "win32": (_WIN_ROAMING, r"Opera Software\Opera Stable")}),
+    ("Vivaldi", "vivaldi", "Vivaldi", "vivaldi",
+     {"darwin": (_MAC, "Vivaldi"), "win32": (_WIN_LOCAL, r"Vivaldi\User Data")}),
+    ("Chromium", "chromium", "Chromium", "chromium",
+     {"darwin": (_MAC, "Chromium"), "win32": (_WIN_LOCAL, r"Chromium\User Data")}),
+]
+
+
+def installed_browsers() -> list[tuple[str, str]]:
+    """[(label, key)] for browsers that have a profile on this computer."""
+    import sys
+    out = []
+    for label, key, _app, _exe, dirs in BROWSERS:
+        base_rel = dirs.get(sys.platform)
+        if base_rel and base_rel[0] and os.path.exists(os.path.join(*base_rel)):
+            out.append((label, key))
+    return out
+
+
+def open_signin(key: str) -> None:
+    """Open SoundCloud's sign-in page in that particular browser (falls back to the default one)."""
+    import sys
+    import webbrowser
+    entry = next((b for b in BROWSERS if b[1] == key), None)
+    try:
+        if entry and sys.platform == "darwin":
+            if converter.run_quiet(["open", "-a", entry[2], SIGNIN_URL]).returncode == 0:
+                return
+        elif entry and sys.platform == "win32" and entry[3]:
+            # "start <exe>" finds browsers through Windows' App Paths registry
+            if converter.run_quiet(["cmd", "/c", "start", "", entry[3], SIGNIN_URL]).returncode == 0:
+                return
+    except OSError:
+        pass
+    webbrowser.open(SIGNIN_URL)
+
+
+def token_from_browser(key: str, profile: str | None = None) -> str:
+    """Read SoundCloud's oauth_token cookie from the browser's own cookie store. Raises SCError."""
+    import sys
+    from yt_dlp.cookies import YDLLogger, extract_cookies_from_browser
+
+    class Collect(YDLLogger):
+        def __init__(self):
+            super().__init__(None)
+            self.problems: list[str] = []
+
+        def warning(self, message, only_once=False):
+            self.problems.append(str(message))
+
+        def error(self, message):
+            self.problems.append(str(message))
+
+        def info(self, message):
+            pass
+
+        def debug(self, message):
+            pass
+
+    label = next((b[0] for b in BROWSERS if b[1] == key), key)
+    log = Collect()
+    try:
+        jar = extract_cookies_from_browser(key, profile, logger=log)
+    except PermissionError:
+        if key == "safari":
+            raise SCError("macOS blocks reading Safari's cookies. Give Soulrip Full Disk Access "
+                          "(System Settings → Privacy & Security → Full Disk Access), or use another browser.")
+        raise SCError(f"{label} is keeping its cookie file locked. Quit {label} completely and try again.")
+    except FileNotFoundError:
+        raise SCError(f"Couldn't find {label}'s cookies. Is {label} set up on this computer?")
+    except Exception as e:
+        raise SCError(f"Couldn't read {label}'s cookies: {e}")
+
+    tokens = [c for c in jar if c.name == "oauth_token" and c.domain.lstrip(".").endswith("soundcloud.com")
+              and c.value]
+    if tokens:
+        return max(tokens, key=lambda c: c.expires or 0).value.strip('"')
+
+    decrypt_trouble = any("decrypt" in p or "key" in p.lower() for p in log.problems)
+    if decrypt_trouble and sys.platform == "darwin":
+        raise SCError(f"macOS didn't let Soulrip unlock {label}'s cookies. Try again and click "
+                      f"\"Allow\" when asked for access to \"{label} Safe Storage\" in your keychain.")
+    if decrypt_trouble and sys.platform == "win32" and key in ("chrome", "edge", "brave"):
+        raise SCError(f"{label} encrypts its cookies in a way other apps can't read on Windows. "
+                      "Use Firefox for this step, or paste the token manually.")
+    raise SCError(f"No SoundCloud login found in {label}. Log in to soundcloud.com in {label} first "
+                  "(use the button above), then try again.")
