@@ -11,3 +11,9 @@ build_assets/
 
 # OS clutter
 .DS_Store
+
+# Files Soulrip writes into download folders (never part of the project)
+.soulrip.json
+_missing.txt
+*.m3u8
+.incoming/
