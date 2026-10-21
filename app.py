@@ -745,7 +745,7 @@ class App:
         self.threshold = tk.StringVar(value=str(self.cfg.get("threshold", 80)))
         self.parallel = tk.StringVar(value=str(self.cfg.get("parallel", 3)))
         self.always_ask = tk.BooleanVar(value=self.cfg.get("always_ask", False))
-        self.rename = tk.BooleanVar(value=self.cfg.get("rename", True))
+        self.rename = tk.BooleanVar(value=self.cfg.get("rename", False))
         self.skip_existing = tk.BooleanVar(value=self.cfg.get("skip_existing", True))
         self.reject_fake = tk.BooleanVar(value=self.cfg.get("reject_fake", True))
         self.number = tk.BooleanVar(value=self.cfg.get("number", False))

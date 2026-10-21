@@ -40,6 +40,26 @@ def thumb_source(track: Track) -> str | None:
     return None
 
 
+def missing_cover(size: int):
+    """A rounded grey square with a "?" — drawn large and shrunk, so it stays crisp at 24 px."""
+    from PIL import ImageDraw, ImageFont
+    big = size * 4
+    img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([0, 0, big - 1, big - 1], radius=big // 6, fill=(118, 120, 128, 255))
+    font = None
+    for path in ("/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Helvetica.ttc",
+                 "C:/Windows/Fonts/segoeuib.ttf", "C:/Windows/Fonts/arialbd.ttf"):
+        try:
+            font = ImageFont.truetype(path, int(big * 0.68))
+            break
+        except OSError:
+            continue
+    font = font or ImageFont.load_default(size=int(big * 0.68))
+    d.text((big / 2, big / 2), "?", font=font, fill=(235, 236, 240, 255), anchor="mm")
+    return img.resize((size, size), Image.LANCZOS)
+
+
 class ThumbLoader:
     """loader.request(key, track, size, callback) → callback(key, PhotoImage) on the Tk thread."""
 
@@ -62,6 +82,7 @@ class ThumbLoader:
     def _work(self, key, track, size, callback, ctk_image=False):
         url = thumb_source(track)
         if not url:
+            self._placeholder(key, size, callback, ctk_image)
             return
         with self.lock:
             hit = None if ctk_image else self.cache.get((url, size))
@@ -72,6 +93,7 @@ class ThumbLoader:
             data = requests.get(url, headers=UA, timeout=10).content
             img = Image.open(io.BytesIO(data)).convert("RGB")
         except Exception:
+            self._placeholder(key, size, callback, ctk_image)
             return
         w, h = img.size
         side = min(w, h)                 # YouTube thumbnails are 4:3 — crop the middle square
@@ -82,13 +104,23 @@ class ThumbLoader:
         else:
             self.post(self._make_photo, key, url, size, img, callback)
 
+    def _placeholder(self, key, size, callback, ctk_image):
+        """No cover for this track: a grey square with a question mark."""
+        if ctk_image:
+            self.post(self._make_ctk, key, size, missing_cover(size), callback)
+        else:
+            self.post(self._make_photo, key, "?", size, missing_cover(size), callback)
+
     @staticmethod
     def _make_ctk(key, size, img, callback):                # runs on the Tk thread
         import customtkinter as ctk
         callback(key, ctk.CTkImage(light_image=img, dark_image=img, size=(size, size)))
 
     def _make_photo(self, key, url, size, img, callback):     # runs on the Tk thread
-        photo = ImageTk.PhotoImage(img)
         with self.lock:
-            self.cache[(url, size)] = photo
+            photo = self.cache.get((url, size))
+        if photo is None:            # one shared image per URL (and one "?" per size): Tk drops images
+            photo = ImageTk.PhotoImage(img)          # Python no longer holds, so every one is cached
+            with self.lock:
+                self.cache[(url, size)] = photo
         callback(key, photo)

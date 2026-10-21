@@ -44,7 +44,7 @@ class JobOptions:
     preset: str
     threshold: float = 80
     always_ask: bool = False
-    rename: bool = True
+    rename: bool = False
     skip_existing: bool = True
     parallel: int = 3
     search_wait: float = 8.0

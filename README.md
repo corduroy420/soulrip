@@ -5,8 +5,11 @@
 A SoundCloud, Spotify and YouTube playlist downloader for DJs. For every track it first looks for a
 higher-quality file on **Soulseek** (FLAC, WAV, MP3 320…), scores each result for how closely it matches,
 and asks you before downloading anything doubtful. When a track isn't on Soulseek, it can take the
-artist's official SoundCloud download or rip the SoundCloud stream via **yt-dlp**. Missing cover art is
-added, lossless files can be converted to MP3, and every playlist gets an `.m3u8` in the original order.
+artist's official SoundCloud download or rip the SoundCloud stream via **yt-dlp**. You can preview tracks
+before downloading, missing cover art is added, lossless files can be converted to MP3, and every
+playlist gets an `.m3u8` in the original order.
+
+![Soulrip downloading a playlist](assets/screenshot.png)
 
 ## Download
 
@@ -24,14 +27,34 @@ The app checks for new versions each time it opens and offers to download them
 **First launch on a Mac:** open the .dmg and drag Soulrip into Applications. Because the app isn't
 notarized by Apple, macOS will say it "cannot be verified" the first time. Click **Done**, then open
 **System Settings → Privacy & Security**, scroll down and click **Open Anyway**. You only need to do this once.
+If the icon keeps bouncing without opening, look for a hidden "Open Soulrip?" prompt (Mission Control), or
+right-click the app → **Open**.
 
 **First launch on Windows:** SmartScreen may say "Windows protected your PC". Click **More info → Run anyway**.
 
 **You'll need:**
-- **A Soulseek account.** Logging in with a new username creates one. Use a different username than
-  your other Soulseek client (e.g. Nicotine+), because one account can only be logged in once.
-- **ffmpeg** (optional) for MP3 conversion, the fake-lossless check and some SoundCloud streams.
+- **A Soulseek account**, unless you only use SoundCloud (see below). Logging in with a new username creates
+  one. Use a different username than your other Soulseek client (e.g. Nicotine+), because one account can
+  only be logged in once.
+- **ffmpeg** (optional) for previews, MP3 conversion, the fake-lossless check and some SoundCloud streams.
   Mac: `brew install ffmpeg` · Windows: `winget install Gyan.FFmpeg`.
+
+## Using Soulrip
+
+1. **Log in.** Choose **Log in** (Soulseek) or **Use SoundCloud only**. The main window opens after that.
+2. **Paste a playlist link** (Spotify, SoundCloud or YouTube) and click **Load playlist**. Each track shows
+   its cover (a **?** when there isn't one) and a **▶** to preview it.
+3. **Pick a quality** and the **match threshold** (results at or above it download automatically).
+4. Click **▶ Find & download all**, or select tracks and click **Download selected**.
+5. Doubtful matches open a **review window**. Play the original, preview a Soulseek result, pick one,
+   search again, or skip.
+
+The status line (bottom right) always shows what's going on: `● Running — 5/22 finished · 3 downloading ·
+1 waiting for you`, `● Paused — Soulseek disconnected`, `■ Stopped` or `✓ Done`.
+**Double-click a track** to see every source that was tried and why it failed. The full log is under
+**Help → Open Log File**.
+
+The look follows your system's light or dark mode.
 
 ## Run from source
 
@@ -46,7 +69,7 @@ On a Mac you can also double-click **`Playlist Downloader.command`**.
 Bump `version.py`, commit, then push a matching annotated tag. Its message becomes the release notes:
 
 ```bash
-git tag -a v1.0.1 -m "What changed" && git push origin main v1.0.1
+git tag -a v1.1.1 -m "What changed" && git push origin main v1.1.1
 ```
 
 GitHub Actions builds the Apple Silicon, Intel and Windows apps, self-tests them, and publishes the release.
@@ -80,25 +103,44 @@ Ranking: similarity (in 5-point steps) → your quality tier → free upload slo
 - WAV/AIFF only (older CDJs that can't play FLAC)
 - WAV/AIFF → MP3 320 (no FLAC)
 - MP3 320 only
+- **No FLAC: MP3 → M4A → anything else**: never FLAC; MP3 first, then M4A/AAC, then WAV/AIFF/other, higher bitrates first
 - Best available (≥256k)
 
 MP3s without a reported bitrate get one estimated from file size and length.
 
-## Behaviour
+## Previews
 
-- **Previews (test branch):** every track shows its cover, and ▶ plays it. That's Spotify's 30-second clip, or
-  the SoundCloud or YouTube stream (not DRM tracks). In the review window, **▶ Preview selected** starts downloading
-  that Soulseek result and plays it as it arrives. Keep it with **Download selected**, or stop it and the partial
-  file is deleted. Busy uploaders still mean waiting in their queue. Previews need ffmpeg (its `ffplay`).
-- **Skip selected** (while a job runs): select one or more tracks and skip them. This stops their search, queue wait or download, cancels the request with the uploader, and frees the download slot for the next track. Finished tracks are left alone. Retry skipped tracks with **Download selected**. It works mid-job too, adding the tracks to the running job
-  (tracks already downloaded or in progress are ignored).
-- **Right-click → Extend queue timeout** on a track waiting in an uploader's queue gives it +5 min, +30 min or no limit. Use it when you really want that track and don't mind waiting.
-- **Fallbacks:** if a user is offline, queues you for more than 3 min, or stalls, the next good source is tried.
-- **Files:** saved to `<Save to>/<Playlist name>/`. Confident matches are renamed `Artist - Title.ext`.
-  Hand-picked results keep their own filename, so a Radio Edit you chose doesn't get labelled Extended Mix.
+- **▶ in the track list** plays the playlist track. That's Spotify's 30-second clip, or the SoundCloud or YouTube
+  stream (Go+ quality when connected). DRM-protected SoundCloud tracks can't be previewed. A "Now playing" bar
+  with a Stop button appears while it plays.
+- **▶ Preview selected** in the review window starts downloading that Soulseek result and plays it as it arrives.
+  If it's the right one, click **Download selected** and the same download simply continues. Stop it, and the
+  download is cancelled and the partial file deleted. Soulseek has no streaming, so a busy uploader still means
+  waiting in their queue first.
+- Previews play through ffmpeg's `ffplay`, so ffmpeg must be installed.
+
+## While a job runs
+
+- **Skip selected:** stops the selected tracks' search, queue wait or download, cancels the request with the
+  uploader, and frees the download slot for the next track. Finished tracks are left alone.
+- **Download selected** works mid-job too. It adds the tracks to the running job (tracks already downloaded
+  or in progress are ignored), so you can retry skipped or failed tracks without waiting.
+- **Right-click → Extend queue timeout** on a track waiting in an uploader's queue gives it +5 min, +30 min or
+  no limit. Use it when you really want that track and don't mind waiting.
+- **Fallbacks:** a source that keeps you in its queue for 30 s, can't be reached, or stalls for 90 s is dropped
+  and the next good source is tried. The last remaining source of a track gets 5 minutes. When every source
+  fails, you're asked what to do with the untried results.
+- **Connection drops:** the job pauses and continues once Soulrip has reconnected.
+
+## Files
+
+- Saved to `<Save to>/<Playlist name>/`. Tick **Rename to "Artist - Title"** to rename confident matches
+  (off by default). Hand-picked results always keep their own filename, so a Radio Edit you chose doesn't get
+  labelled Extended Mix.
 - **Re-running a playlist** skips tracks already in the folder, so you only fetch what's new.
 - Tracks that weren't downloaded are listed in `_missing.txt`.
-- Settings are stored in `~/.slsk_playlist_dl.json`. The password goes in the macOS Keychain, and only if you tick "Remember".
+- Settings are stored in `~/.slsk_playlist_dl.json`. Passwords and the SoundCloud login go in your system
+  keychain (macOS Keychain / Windows Credential Manager).
 
 ## Cover art (`artwork.py`)
 
@@ -156,7 +198,7 @@ quality and matching options are greyed out. Switch back any time with **Account
 
 ## Converting to MP3 (`converter.py`)
 
-Requires ffmpeg (`brew install ffmpeg`). Runs automatically after an "MP3 library" job, or anytime with **Convert to MP3…**.
+Requires ffmpeg (`brew install ffmpeg` / `winget install Gyan.FFmpeg`). Runs automatically after an "MP3 library" job, or anytime with **Convert to MP3…**.
 
 - Uses **LAME**, the same encoder XLD and dBpoweramp use, at its best-quality setting (`-q 0`).
   **320 kbps CBR** is the default because it's the safest choice for CDJs. **V0** is optional.
@@ -181,6 +223,8 @@ Rarely, a genuine old master or vinyl rip is flagged by mistake. You can still s
 - You don't share any files, and some Soulseek users won't upload to people who share nothing.
   Sharing a folder from a regular client like Nicotine+ helps.
 - Don't run another Soulseek client on the same listen port (default 61234).
+- Some networks (universities, offices, public Wi-Fi) block Soulseek. Login then hangs at "Connecting…".
+  Use a phone hotspot or another network, or **Use SoundCloud only**.
 
 ## License
 
