@@ -1,0 +1,63 @@
+"""Turn assets/logo.png into the app icons (build_assets/icon.png, .icns, .ico).
+
+The logo (an orange cloud with rain strokes, transparent background) is trimmed, centred on a white
+rounded square and scaled up. Small sizes get slightly thicker strokes so the thin rain lines stay
+visible in the Dock, taskbar and title bar.
+"""
+import os
+
+from PIL import Image, ImageDraw
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOGO = os.path.join(ROOT, "assets", "logo.png")
+OUT_DIR = os.path.join(ROOT, "build_assets")
+SIZE = 1024
+MARGIN = 60          # transparent edge around the rounded square (macOS icon grid)
+PADDING = 140        # space between the square's edge and the drawing
+SMALL_SIZES = [16, 32, 48, 64, 128, 256]
+
+
+def trimmed_logo() -> Image.Image:
+    logo = Image.open(LOGO).convert("RGBA")
+    box = logo.getchannel("A").point(lambda p: 255 if p > 16 else 0).getbbox()
+    return logo.crop(box) if box else logo
+
+
+def compose(logo: Image.Image, thicken: int = 0) -> Image.Image:
+    canvas = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
+    mask = Image.new("L", (SIZE, SIZE), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([MARGIN, MARGIN, SIZE - MARGIN, SIZE - MARGIN], radius=200, fill=255)
+    canvas.paste(Image.new("RGBA", (SIZE, SIZE), (255, 255, 255, 255)), (0, 0), mask)
+    ImageDraw.Draw(canvas).rounded_rectangle([MARGIN, MARGIN, SIZE - MARGIN, SIZE - MARGIN], radius=200,
+                                             outline=(0, 0, 0, 40), width=4)  # faint edge on white backgrounds
+    room = SIZE - 2 * (MARGIN + PADDING)
+    scale = room / max(logo.size)
+    art = logo.resize((round(logo.width * scale), round(logo.height * scale)), Image.LANCZOS)
+    if thicken:  # stamp the drawing in a small circle of offsets: thicker strokes, same colours
+        r = thicken
+        bold = Image.new("RGBA", (art.width + 2 * r, art.height + 2 * r), (0, 0, 0, 0))
+        for dx in range(-r, r + 1, 2):
+            for dy in range(-r, r + 1, 2):
+                if dx * dx + dy * dy <= r * r:
+                    bold.alpha_composite(art, (r + dx, r + dy))
+        art = bold
+    canvas.alpha_composite(art, ((SIZE - art.width) // 2, (SIZE - art.height) // 2))
+    return canvas
+
+
+def main():
+    os.makedirs(OUT_DIR, exist_ok=True)
+    logo = trimmed_logo()
+    full = compose(logo)
+    bold = compose(logo, thicken=10)  # used for the small sizes only
+    small = [(bold if s <= 64 else full).resize((s, s), Image.LANCZOS) for s in SMALL_SIZES]
+    full.save(os.path.join(OUT_DIR, "icon.png"))
+    full.save(os.path.join(OUT_DIR, "icon.icns"), append_images=small)
+    small[-1].save(os.path.join(OUT_DIR, "icon.ico"), sizes=[(s, s) for s in SMALL_SIZES], append_images=small[:-1])
+    for s in (32, 128):
+        (bold if s <= 64 else full).resize((s, s), Image.LANCZOS).save(os.path.join(OUT_DIR, f"preview-{s}.png"))
+    print("Icons written to", OUT_DIR)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,9 @@
+aioslsk>=1.7
+rapidfuzz>=3.0
+requests>=2.31
+certifi
+yt-dlp>=2025.1.1
+keyring>=25.0
+numpy>=1.26
+mutagen>=1.47
+send2trash>=1.8

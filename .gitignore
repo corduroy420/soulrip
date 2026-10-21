@@ -1,0 +1,13 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Build output (scripts/build.py)
+build/
+dist/
+build_assets/
+*.spec
+
+# OS clutter
+.DS_Store

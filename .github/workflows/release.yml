@@ -1,0 +1,102 @@
+name: Build and release
+
+# Push a tag like v1.0.1 (matching version.py) to build the apps and publish a GitHub Release.
+# "Run workflow" on the Actions tab builds the apps without releasing (handy for testing).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest      # Apple Silicon
+            name: macOS-AppleSilicon
+          - os: macos-15-intel    # Intel Macs
+            name: macOS-Intel
+          - os: windows-latest
+            name: Windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller dmgbuild pillow
+
+      - name: Check version.py matches the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          version=$(python -c "from version import __version__; print(__version__)")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::version.py says $version but the tag is $GITHUB_REF_NAME"
+            exit 1
+          fi
+
+      - name: Build
+        run: python scripts/build.py
+
+      # Certificate paths are pointed at nothing, as on a user's computer without Python installed,
+      # so the self-test proves HTTPS works with only the certificates packed inside the app.
+      - name: Self-test the macOS app
+        if: runner.os == 'macOS'
+        env:
+          SSL_CERT_FILE: /nonexistent
+          SSL_CERT_DIR: /nonexistent
+        run: |
+          "dist/Soulrip.app/Contents/MacOS/Soulrip" --self-test report.json
+          cat report.json
+
+      - name: Self-test the Windows app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          SSL_CERT_FILE: C:\nonexistent
+          SSL_CERT_DIR: C:\nonexistent
+        run: |
+          $p = Start-Process -FilePath "dist\Soulrip-Windows.exe" -ArgumentList "--self-test","report.json" -Wait -PassThru
+          Get-Content report.json
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Soulrip-${{ matrix.name }}
+          path: |
+            dist/*.dmg
+            dist/Soulrip-Windows.exe
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch the annotated tag (its message becomes the release notes)
+        run: git fetch --force --tags
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" artifacts/* \
+            --title "Soulrip ${GITHUB_REF_NAME#v}" \
+            --notes-from-tag
