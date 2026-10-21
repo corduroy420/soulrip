@@ -847,6 +847,8 @@ class App:
         for seq in ("<Button-2>", "<Button-3>", "<Control-Button-1>"):   # right-click on macOS + others
             self.tree.bind(seq, self.row_menu)
         self.waiting_rows: set[int] = set()    # tracks currently waiting in an uploader's queue
+        self.job_rows: set[int] = set()        # tracks in the running job (for the progress line)
+        self.slsk_online = True
 
         bot = self.bot = ctk.CTkFrame(root, fg_color="transparent")
         bot.pack(fill="x", padx=16, pady=14)
@@ -989,7 +991,8 @@ class App:
             todo = sorted(i for i in sel if "done" not in self.tree.item(str(i), "tags"))
             if todo:
                 self.engine.add_to_job(todo)
-                self.status.configure(text=f"Added {len(todo)} track(s) to the running job.")
+                self.job_rows |= set(todo)
+                self.note(f"Added {len(todo)} track(s) to the running job.")
             return
         self._start(sorted(sel))
 
@@ -1007,7 +1010,43 @@ class App:
             self.attempts.pop(i, None)
         self._set_running(True)
         self.downloaded = []
+        self.job_rows = set(indices)
         self.engine.start_job(self.playlist, indices, self._options())
+        self._job_progress()
+
+    def note(self, text: str, seconds: float = 3.0):
+        """A short message in the status line; while a job runs, progress comes back after a few seconds."""
+        import time
+        self._note_until = time.monotonic() + seconds
+        self.status.configure(text=text, text_color=ui.INFO)
+
+    def _job_progress(self):
+        """While a job runs, the status line always shows that it's running and how far along it is."""
+        import time
+        if not self.running:
+            return
+        if time.monotonic() < getattr(self, "_note_until", 0):
+            self.root.after(500, self._job_progress)
+            return
+        counts = {"done": 0, "fail": 0, "skip": 0, "dl": 0, "ask": 0}
+        for i in self.job_rows:
+            iid = str(i)
+            if self.tree.exists(iid):
+                for tag in self.tree.item(iid, "tags"):
+                    if tag in counts:
+                        counts[tag] += 1
+        finished = counts["done"] + counts["fail"] + counts["skip"]
+        if not self.soundcloud_only and not self.slsk_online:
+            text, color = "●  Paused — Soulseek disconnected, reconnecting…", ui.WARN
+        else:
+            parts = [f"{finished}/{len(self.job_rows)} finished"]
+            if counts["dl"]:
+                parts.append(f"{counts['dl']} downloading")
+            if counts["ask"]:
+                parts.append(f"{counts['ask']} waiting for you")
+            text, color = "●  Running — " + " · ".join(parts), ui.INFO
+        self.status.configure(text=text, text_color=color)
+        self.root.after(1000, self._job_progress)
 
     def stop(self):
         self.engine.cancel_job()
@@ -1191,6 +1230,7 @@ class App:
 
     def _handle(self, kind, d):
         if kind == "connection":
+            self.slsk_online = d["state"] == "up"
             if d["state"] == "up":
                 self.status.configure(text=f"● Logged in as {d.get('username', '')} (reconnected)", text_color=ui.GOOD)
             elif d["kicked"]:
@@ -1268,7 +1308,7 @@ class App:
         elif kind == "job_done":
             self._set_running(False)
             if d["cancelled"]:
-                self.status.configure(text="Stopped.")
+                self.status.configure(text="■  Stopped", text_color=ui.MUTED)
             elif d.get("error"):
                 self.status.configure(text=f"Job stopped by an error — {d['error'][:80]}", text_color=ui.BAD)
                 messagebox.showerror(APP, f"The job stopped because of an error:\n\n{d['error']}\n\n"
@@ -1278,7 +1318,7 @@ class App:
                 msg = f"Done — {d['ok']} downloaded, {d['missing']} missing/skipped."
                 if d["missing"]:
                     msg += "  (list saved to _missing.txt)"
-                self.status.configure(text=msg)
+                self.status.configure(text=f"✓  {msg}", text_color=ui.GOOD if not d["missing"] else ui.WARN)
                 lossless = [x for x in self.downloaded if converter.is_lossless(x[0])]
                 if lossless and self.preset.get() in matcher.CONVERT_PRESETS:
                     ConvertDialog(self, lossless)
@@ -1394,7 +1434,7 @@ class App:
         if rows:
             self.engine.extend_timeout(rows, seconds)
             what = "no limit" if seconds == float("inf") else f"+{int(seconds // 60)} min"
-            self.status.configure(text=f"Queue timeout extended ({what}) for {len(rows)} track(s).")
+            self.note(f"Queue timeout extended ({what}) for {len(rows)} track(s).")
 
     # ------------------------------------------------------------------ details
     def show_attempts(self, event):
