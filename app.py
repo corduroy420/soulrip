@@ -41,6 +41,46 @@ elif sys.platform == "darwin":
 else:
     LOG_FILE = os.path.expanduser("~/.local/state/soulrip/soulrip.log")
 REPO_URL = f"https://github.com/{updater.GITHUB_REPO}"
+DEFAULT_SAVE_DIR = os.path.expanduser("~/Music/Soulseek Playlists")
+# Downloads land here first, then move into the Save to folder. It's Soulrip's own folder, so logging in
+# never depends on what's typed in Save to.
+if sys.platform == "win32":
+    STAGING_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Soulrip", "incoming")
+elif sys.platform == "darwin":
+    STAGING_DIR = os.path.expanduser("~/Library/Application Support/Soulrip/incoming")
+else:
+    STAGING_DIR = os.path.expanduser("~/.local/share/soulrip/incoming")
+
+
+class SaveDirError(Exception):
+    pass
+
+
+def resolve_save_dir(raw: str) -> tuple[str, str]:
+    """Turn whatever is typed in "Save to" into a real, writable folder. Returns (path, note for the user).
+
+    Empty → the default folder. "~/Music", "$HOME/…" and quotes are handled; a relative path is taken as
+    relative to your home folder (never the app's own folder, which can be read-only). Raises SaveDirError
+    with a plain explanation when the folder can't be used."""
+    text = (raw or "").strip().strip('"').strip("'").strip()
+    note = ""
+    if not text:
+        path, note = DEFAULT_SAVE_DIR, f"Save to was empty, so Soulrip is using {DEFAULT_SAVE_DIR}"
+    else:
+        path = os.path.expandvars(os.path.expanduser(text))
+        if not os.path.isabs(path):
+            path = os.path.join(os.path.expanduser("~"), path)
+    path = os.path.normpath(path)
+    if os.path.exists(path) and not os.path.isdir(path):
+        raise SaveDirError(f"“{path}” is a file, not a folder. Pick a folder with Browse…")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as e:
+        raise SaveDirError(f"Soulrip can't create the folder “{path}” ({e.strerror or e}). "
+                           "Pick another folder with Browse… (is the drive connected?)")
+    if not os.access(path, os.W_OK):
+        raise SaveDirError(f"Soulrip isn't allowed to save into “{path}”. Pick another folder with Browse…")
+    return path, note
 
 
 def open_path(path: str):
@@ -59,12 +99,37 @@ except ImportError:  # optional
     keyring = None
 
 
+# Saved settings and their types (value range for numbers). Anything else in the file — wrong types from a
+# hand edit, an old version or a damaged file — is dropped so the default is used instead of crashing.
+_CFG_STR = {"out_dir", "last_url", "username", "preset", "sc_mode", "encoding", "originals", "skipped_version",
+            "sc_browser", "sc_user_label", "sc_username"}
+_CFG_INT = {"threshold": (0, 100), "parallel": (1, 8), "port": (1024, 65535)}
+_CFG_BOOL = {"always_ask", "rename", "skip_existing", "reject_fake", "number", "add_art", "remember", "sc_go_plus"}
+
+
 def load_config() -> dict:
     try:
         with open(CONFIG, encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, json.JSONDecodeError):
+            raw = json.load(fh)
+    except (OSError, ValueError):
         return {}
+    if not isinstance(raw, dict):
+        return {}
+    cfg = {}
+    for k, v in raw.items():
+        if k in _CFG_STR and isinstance(v, str):
+            cfg[k] = v
+        elif k in _CFG_INT:
+            lo, hi = _CFG_INT[k]
+            try:
+                n = int(v) if not isinstance(v, bool) else None
+            except (TypeError, ValueError):
+                n = None
+            if n is not None and lo <= n <= hi:
+                cfg[k] = n
+        elif k in _CFG_BOOL and isinstance(v, bool):
+            cfg[k] = v
+    return cfg
 
 
 def save_config(cfg: dict):
@@ -160,12 +225,15 @@ class LoginDialog(ctk.CTkToplevel):
     def submit(self):
         u, p = self.user.get().strip(), self.pw.get()
         if not u or not p:
-            self.msg.configure(text="Enter a username and password.")
+            self.msg.configure(text="Enter a username and password.", text_color=ui.BAD)
             return
         try:
-            port = int(self.port.get())
+            port = int(self.port.get().strip())
         except ValueError:
-            self.msg.configure(text="Port must be a number.")
+            port = 0
+        if not 1024 <= port <= 65535:
+            self.msg.configure(text="Listen port must be a number from 1024 to 65535 (the default is 61234).",
+                               text_color=ui.BAD)
             return
         ui.set_enabled(self.btn, False)
         self.msg.configure(text="Connecting…", text_color=ui.MUTED)
@@ -179,7 +247,7 @@ class LoginDialog(ctk.CTkToplevel):
                     keyring.delete_password(KEYRING_SERVICE, u)
             except Exception:
                 pass
-        self.app.engine.login(u, p, port, os.path.join(self.app.out_dir.get(), ".incoming"))
+        self.app.engine.login(u, p, port, STAGING_DIR)
 
     def failed(self, msg):
         ui.set_enabled(self.btn, True)
@@ -591,11 +659,13 @@ class ConvertDialog(ctk.CTkToplevel):
         opt = ctk.CTkFrame(f, fg_color="transparent")
         opt.pack(fill="x")
         ctk.CTkLabel(opt, text="Encoding").grid(row=0, column=0, sticky="w")
-        self.enc = tk.StringVar(value=app.cfg.get("encoding", next(iter(converter.ENCODINGS))))
+        enc = app.cfg.get("encoding")
+        self.enc = tk.StringVar(value=enc if enc in converter.ENCODINGS else next(iter(converter.ENCODINGS)))
         ctk.CTkOptionMenu(opt, variable=self.enc, values=list(converter.ENCODINGS), width=270,
                           dynamic_resizing=False).grid(row=0, column=1, sticky="w", padx=8)
         ctk.CTkLabel(opt, text="Originals").grid(row=0, column=2, sticky="w", padx=(18, 6))
-        self.orig = tk.StringVar(value=app.cfg.get("originals", "move"))
+        orig = app.cfg.get("originals")
+        self.orig = tk.StringVar(value=orig if orig in ("move", "keep", "delete") else "move")
         for col, (val, label) in enumerate((("move", "Move to _lossless subfolder"),
                                             ("keep", "Keep next to MP3"), ("delete", "Delete")), start=3):
             ctk.CTkRadioButton(opt, text=label, value=val, variable=self.orig).grid(row=0, column=col, sticky="w",
@@ -750,7 +820,7 @@ class App:
         if self.sc_mode.get() not in SC_MODES:
             self.sc_mode.set(SC_MODES[0])
 
-        self.out_dir = tk.StringVar(value=self.cfg.get("out_dir", os.path.expanduser("~/Music/Soulseek Playlists")))
+        self.out_dir = tk.StringVar(value=(self.cfg.get("out_dir") or "").strip() or DEFAULT_SAVE_DIR)
         self.url = tk.StringVar(value=self.cfg.get("last_url", ""))
         self.preset = tk.StringVar(value=self.cfg.get("preset", next(iter(matcher.QUALITY_PRESETS))))
         if self.preset.get() not in matcher.QUALITY_PRESETS:
@@ -870,7 +940,7 @@ class App:
         self.slsk_online = True
 
         bot = self.bot = ctk.CTkFrame(root, fg_color="transparent")
-        bot.pack(fill="x", padx=16, pady=14)
+        bot.pack(fill="x", padx=16, pady=(12, 6))
         self.start_btn = ctk.CTkButton(bot, text="▶  Find & download all", command=self.start_all, width=180)
         self.start_btn.pack(side="left")
         self.sel_btn = ctk.CTkButton(bot, text="Download selected", command=self.start_selected, width=150)
@@ -882,8 +952,9 @@ class App:
         self.skip_btn.pack(side="left", padx=8)
         ui.secondary(bot, "Open folder", self.open_folder, width=110).pack(side="left")
         ui.secondary(bot, "Convert to MP3…", self.convert_folder, width=140).pack(side="left", padx=8)
-        self.status = ctk.CTkLabel(bot, text="Not logged in", text_color=ui.MUTED, anchor="e")
-        self.status.pack(side="right", fill="x", expand=True)
+        # status on its own line under the buttons, so it's never cut off when the window is narrow
+        self.status = ctk.CTkLabel(root, text="Not logged in", text_color=ui.MUTED, anchor="w", justify="left")
+        self.status.pack(fill="x", padx=18, pady=(0, 10), after=bot)
         self._set_running(False)
 
     # ------------------------------------------------------------------ actions
@@ -951,12 +1022,28 @@ class App:
         self.login_dlg = LoginDialog(self)
 
     def browse(self):
-        d = filedialog.askdirectory(initialdir=self.out_dir.get() or os.path.expanduser("~"))
+        start = os.path.expanduser(self.out_dir.get().strip()) or DEFAULT_SAVE_DIR
+        d = filedialog.askdirectory(initialdir=start if os.path.isdir(start) else os.path.expanduser("~"))
         if d:
             self.out_dir.set(d)
 
+    def save_dir(self) -> str | None:
+        """The checked Save to folder (created if needed), or None after telling the user what's wrong."""
+        try:
+            path, note = resolve_save_dir(self.out_dir.get())
+        except SaveDirError as e:
+            messagebox.showerror(APP, str(e))
+            return None
+        if path != self.out_dir.get():
+            self.out_dir.set(path)
+        if note:
+            self.note(note, 6)
+        return path
+
     def open_folder(self):
-        path = self.out_dir.get()
+        path = self.save_dir()
+        if not path:
+            return
         if self.playlist:
             from slsk_engine import safe_name
             p = os.path.join(path, safe_name(self.playlist.name))
@@ -967,6 +1054,11 @@ class App:
     def load(self):
         url = self.url.get().strip()
         if not url:
+            return
+        if self.running:
+            # the running job belongs to the playlist on screen; swapping it would mix up every row
+            messagebox.showinfo(APP, "A job is still running for the current playlist.\n\n"
+                                     "Stop it (■ Stop) or let it finish, then load the next playlist.")
             return
         self.cfg["last_url"] = url
         ui.set_enabled(self.load_btn, False)
@@ -984,12 +1076,12 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _options(self) -> JobOptions:
-        self.cfg.update(out_dir=self.out_dir.get(), preset=self.preset.get(), threshold=int(self.threshold.get()),
+        self.cfg.update(out_dir=self._out, preset=self.preset.get(), threshold=int(self.threshold.get()),
                         parallel=int(self.parallel.get()), always_ask=self.always_ask.get(), rename=self.rename.get(),
                         skip_existing=self.skip_existing.get(), reject_fake=self.reject_fake.get(),
                         number=self.number.get(), add_art=self.add_art.get(), sc_mode=self.sc_mode.get())
         save_config(self.cfg)
-        return JobOptions(out_dir=self.out_dir.get(), preset=self.preset.get(),
+        return JobOptions(out_dir=self._out, staging=STAGING_DIR, preset=self.preset.get(),
                           threshold=float(self.threshold.get()), always_ask=self.always_ask.get(),
                           rename=self.rename.get(), skip_existing=self.skip_existing.get(),
                           parallel=max(1, int(self.parallel.get())), reject_fake=self.reject_fake.get() and self._fake_check_applies(),
@@ -1023,6 +1115,9 @@ class App:
                 return
         elif not self.engine.client:
             messagebox.showwarning(APP, "Log in to Soulseek first.")
+            return
+        self._out = self.save_dir()
+        if not self._out:
             return
         for i in indices:
             self._update_row(i, status="Waiting…", state="", match="", quality="")
@@ -1085,7 +1180,7 @@ class App:
 
     def quit(self):
         self.player.stop()
-        self.cfg.update(out_dir=self.out_dir.get())
+        self.cfg.update(out_dir=self.out_dir.get().strip())
         save_config(self.cfg)
         self.engine.cancel_job()
         self.engine.shutdown()
@@ -1287,6 +1382,10 @@ class App:
         elif kind == "info":
             self.status.configure(text=d["msg"])
         elif kind == "playlist":
+            if self.running:                 # arrived after a job was started: never swap a running job's list
+                ui.set_enabled(self.load_btn, True)
+                self.note(f"Didn't open “{d['pl'].name}” — a job is running. Load it again once it's done.", 6)
+                return
             self.stop_preview()
             self.playlist = d["pl"]
             ui.set_enabled(self.load_btn, True)
@@ -1360,6 +1459,8 @@ class App:
             self.toggle_preview(int(row))
 
     def toggle_preview(self, idx: int):
+        if not self.playlist or not 0 <= idx < len(self.playlist.tracks):
+            return
         if self.playing == idx:
             self.stop_preview()
             return
@@ -1487,6 +1588,8 @@ class App:
         if not iid or not self.playlist:
             return
         idx = int(iid)
+        if idx >= len(self.playlist.tracks):
+            return
         track = self.playlist.tracks[idx]
         lines = self.attempts.get(idx) or ["No download attempts yet for this track."]
         win = ui.window(self.root, f"Attempts — {track.display}", self._icon)
@@ -1501,7 +1604,7 @@ class App:
 
     # ------------------------------------------------------------------ conversion
     def convert_folder(self):
-        start = self.out_dir.get()
+        start = os.path.expanduser(self.out_dir.get().strip()) or DEFAULT_SAVE_DIR
         if self.playlist:
             from slsk_engine import safe_name
             p = os.path.join(start, safe_name(self.playlist.name))

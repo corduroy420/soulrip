@@ -83,7 +83,8 @@ def _spotify(url: str) -> Playlist:
     try:
         entity = json.loads(m.group(1))["props"]["pageProps"]["state"]["data"]["entity"]
     except (KeyError, TypeError, json.JSONDecodeError):
-        raise PlaylistError("Spotify page format changed or playlist is private.")
+        raise PlaylistError("Couldn't read that Spotify playlist. It may be private, deleted, or the link is "
+                            "incomplete — check it opens in a browser without logging in.")
 
     items = entity.get("trackList") or ([entity] if kind == "track" else [])
     tracks = []
@@ -191,7 +192,11 @@ def _youtube(url: str) -> Playlist:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
     except Exception as e:  # yt-dlp raises many types
-        raise PlaylistError(f"YouTube error: {e}")
+        msg = str(e)
+        if "HTTP Error 4" in msg or "does not exist" in msg or "unavailable" in msg.lower():
+            raise PlaylistError("YouTube couldn't open that playlist. It may be private, deleted, or the link "
+                                "is incomplete.")
+        raise PlaylistError(f"Couldn't read that YouTube link: {msg.split(':')[-1].strip()[:150]}")
     entries = info.get("entries") or [info]
     tracks = []
     for e in entries:

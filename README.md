@@ -223,7 +223,7 @@ Rarely, a genuine old master or vinyl rip is flagged by mistake. You can still s
 - You don't share any files, and some Soulseek users won't upload to people who share nothing.
   Sharing a folder from a regular client like Nicotine+ helps.
 - Don't run another Soulseek client on the same listen port (default 61234).
-- Some networks (universities, offices, public Wi-Fi) block Soulseek. Login then hangs at "Connecting…".
+- Some networks (universities, offices, public Wi-Fi) block Soulseek. After 20 seconds the login tells you so.
   Use a phone hotspot or another network, or **Use SoundCloud only**.
 
 ## License

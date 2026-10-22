@@ -42,6 +42,7 @@ STREAMS_KEY = "__streams__"   # manifest: tracks we only have as a SoundCloud st
 class JobOptions:
     out_dir: str
     preset: str
+    staging: str = ""              # where downloads land before moving into out_dir ("" = out_dir/.incoming)
     threshold: float = 80
     always_ask: bool = False
     rename: bool = False
@@ -115,9 +116,17 @@ def save_manifest(dest: str, data: dict):
         pass
 
 
+_WIN_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
 def safe_name(s: str) -> str:
-    s = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", s).strip(" .")
-    return re.sub(r"\s+", " ", s)[:180] or "untitled"
+    """A file/folder name that works on macOS and Windows."""
+    s = re.sub(r"[\x00-\x1f]", " ", s or "")          # tabs/newlines → spaces (don't glue words together)
+    s = re.sub(r'[\\/:*?"<>|]', "", s).strip(" .")
+    s = re.sub(r"\s+", " ", s)[:180].strip(" .") or "untitled"
+    if s.split(".")[0].upper() in _WIN_RESERVED:      # "CON", "nul.txt"… can't be file names on Windows
+        s = f"{s}_"
+    return s
 
 
 class Engine:
@@ -167,8 +176,19 @@ class Engine:
             self.client = SoulSeekClient(settings)
             self.client.events.register(ConnectionStateChangedEvent, self._on_conn)
             self.client.events.register(SessionInitializedEvent, self._on_session_up)
-            await self.client.start()
-            await self.client.login()
+            try:
+                # a network that blocks Soulseek (school, office, public Wi-Fi) never answers: don't hang forever
+                await asyncio.wait_for(self._start_and_login(), timeout=self.LOGIN_TIMEOUT)
+            except asyncio.TimeoutError:
+                try:
+                    await asyncio.wait_for(self.client.stop(), 5)
+                except Exception:
+                    pass
+                self.client = None
+                self.post("login_failed", msg=(
+                    "Can't reach the Soulseek server. Your network may be blocking it — common on school, work "
+                    "and public Wi-Fi. Try another network or a phone hotspot, or click “Use SoundCloud only”."))
+                return
             self._kicked = False
             self._online.set()
             self.post("login_ok", username=username)
@@ -177,7 +197,14 @@ class Engine:
             self.post("login_failed", msg=f"Soulseek rejected the login ({e.reason or 'invalid credentials'}).")
         except Exception as e:
             self.client = None
-            self.post("login_failed", msg=f"Couldn't connect to Soulseek: {e}")
+            self.post("login_failed", msg=f"Couldn't connect to Soulseek: {e}. Check your internet connection, "
+                                          "or click “Use SoundCloud only”.")
+
+    LOGIN_TIMEOUT = 20
+
+    async def _start_and_login(self):
+        await self.client.start()
+        await self.client.login()
 
     def shutdown(self):
         async def _stop():
@@ -750,7 +777,7 @@ class Engine:
             self.post("status", idx=idx, status=f"SoundCloud {what} {pct:.0f}%")
         try:
             path, label = await self.loop.run_in_executor(
-                None, sc_direct.download, track, opts.sc_token, os.path.join(opts.out_dir, ".incoming"), kind,
+                None, sc_direct.download, track, opts.sc_token, opts.staging or os.path.join(opts.out_dir, ".incoming"), kind,
                 progress)
         except sc_direct.SCError as e:
             self._note(idx, f"SoundCloud {what} → {e}")
